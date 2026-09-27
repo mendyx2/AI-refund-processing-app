@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MODELS,
   GEMINI_BASE_URL,
+  OPENROUTER_BASE_URL,
   createProvider,
   describeAiConfig,
   providerFromKey,
@@ -45,7 +46,10 @@ describe("resolveAiConfig", () => {
   });
 
   it("accepts the generic AI_API_KEY for an explicit provider", () => {
-    expect(resolveAiConfig({ AI_PROVIDER: "OpenAI", AI_API_KEY: "k" })).toMatchObject({ provider: "openai", apiKey: "k" });
+    expect(resolveAiConfig({ AI_PROVIDER: "OpenAI", AI_API_KEY: "k" })).toMatchObject({
+      provider: "openai",
+      apiKey: "k",
+    });
   });
 
   it("uses AI_MODEL to override the default model", () => {
@@ -63,12 +67,40 @@ describe("resolveAiConfig", () => {
   it("treats AI_API_KEY + AI_BASE_URL + AI_MODEL as an OpenAI-compatible API", () => {
     expect(
       resolveAiConfig({ AI_API_KEY: "gsk_x", AI_BASE_URL: "https://api.groq.com/openai/v1", AI_MODEL: "llama-x" }),
-    ).toEqual({ provider: "openai-compatible", apiKey: "gsk_x", model: "llama-x", baseUrl: "https://api.groq.com/openai/v1" });
+    ).toEqual({
+      provider: "openai-compatible",
+      apiKey: "gsk_x",
+      model: "llama-x",
+      baseUrl: "https://api.groq.com/openai/v1",
+    });
+  });
+
+  it("routes an OpenRouter key (sk-or-) to OpenRouter, not OpenAI", () => {
+    expect(resolveAiConfig({ AI_API_KEY: "sk-or-v1-abc", AI_MODEL: "google/gemma-x:free" })).toEqual({
+      provider: "openai-compatible",
+      apiKey: "sk-or-v1-abc",
+      model: "google/gemma-x:free",
+      baseUrl: OPENROUTER_BASE_URL,
+    });
+    expect(
+      resolveAiConfig({ AI_PROVIDER: "openai-compatible", AI_API_KEY: "sk-or-v1-abc", AI_MODEL: "m" }),
+    ).toMatchObject({ baseUrl: OPENROUTER_BASE_URL });
+  });
+
+  it("still needs AI_MODEL for an OpenRouter key", () => {
+    expect(resolveAiConfig({ AI_API_KEY: "sk-or-v1-abc" })).toMatchObject({
+      provider: "none",
+      reason: expect.stringMatching(/AI_MODEL/),
+    });
   });
 
   it("allows a keyless local OpenAI-compatible server (Ollama, LM Studio)", () => {
     expect(
-      resolveAiConfig({ AI_PROVIDER: "openai-compatible", AI_BASE_URL: "http://host.docker.internal:11434/v1", AI_MODEL: "llama3.1" }),
+      resolveAiConfig({
+        AI_PROVIDER: "openai-compatible",
+        AI_BASE_URL: "http://host.docker.internal:11434/v1",
+        AI_MODEL: "llama3.1",
+      }),
     ).toMatchObject({ provider: "openai-compatible", apiKey: "not-needed" });
   });
 
@@ -86,6 +118,10 @@ describe("resolveAiConfig", () => {
 });
 
 describe("providerFromKey", () => {
+  it("maps OpenRouter keys to openai-compatible before the generic sk- rule", () => {
+    expect(providerFromKey("sk-or-v1-abc")).toBe("openai-compatible");
+  });
+
   it("returns null for unknown formats", () => {
     expect(providerFromKey("gsk_groq")).toBeNull();
   });
@@ -96,7 +132,11 @@ describe("createProvider", () => {
     [{ ANTHROPIC_API_KEY: "a" }, AnthropicProvider, "anthropic"],
     [{ OPENAI_API_KEY: "o" }, OpenAICompatibleProvider, "openai"],
     [{ GEMINI_API_KEY: "g" }, OpenAICompatibleProvider, "gemini"],
-    [{ AI_PROVIDER: "openai-compatible", AI_BASE_URL: "http://x/v1", AI_MODEL: "m" }, OpenAICompatibleProvider, "openai-compatible"],
+    [
+      { AI_PROVIDER: "openai-compatible", AI_BASE_URL: "http://x/v1", AI_MODEL: "m" },
+      OpenAICompatibleProvider,
+      "openai-compatible",
+    ],
     [{}, UnconfiguredProvider, "none"],
   ])("builds the right adapter for %j", (env, cls, name) => {
     const provider = createProvider(resolveAiConfig(env));

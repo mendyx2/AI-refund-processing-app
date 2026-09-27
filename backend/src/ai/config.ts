@@ -7,7 +7,8 @@
  *   2. Otherwise the first provider-specific key found wins:
  *      ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY.
  *   3. Otherwise AI_API_KEY is used: with AI_BASE_URL it is an OpenAI-compatible
- *      API; without, the provider is inferred from the key's prefix.
+ *      API; without, the provider is inferred from the key's prefix
+ *      (an OpenRouter key, sk-or-, selects OpenRouter's endpoint).
  * AI_MODEL overrides the provider's default model; AI_BASE_URL overrides the
  * endpoint of OpenAI-style providers.
  */
@@ -37,6 +38,10 @@ export const DEFAULT_MODELS: Record<Exclude<ProviderName, "openai-compatible">, 
 
 /** Google's OpenAI-compatible endpoint for Gemini. */
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
+/** OpenRouter (OpenAI-compatible); used by default for keys starting with sk-or-. */
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+const isOpenRouterKey = (key: string | undefined) => key?.startsWith("sk-or-") ?? false;
 
 export type AiConfig =
   | { provider: ProviderName; apiKey: string; model: string; baseUrl?: string }
@@ -50,8 +55,9 @@ const get = (env: Env, key: string) => {
   return v ? v : undefined;
 };
 
-/** Best-effort provider guess from a key's format. */
-export function providerFromKey(key: string): Exclude<ProviderName, "openai-compatible"> | null {
+/** Best-effort provider guess from a key's format. OpenRouter keys (sk-or-) map to openai-compatible. */
+export function providerFromKey(key: string): ProviderName | null {
+  if (isOpenRouterKey(key)) return "openai-compatible";
   if (key.startsWith("sk-ant-")) return "anthropic";
   if (key.startsWith("AIza")) return "gemini";
   if (key.startsWith("sk-")) return "openai";
@@ -76,7 +82,10 @@ function keyFor(env: Env, provider: ProviderName): string | undefined {
 function build(env: Env, provider: ProviderName): AiConfig {
   const apiKey = keyFor(env, provider);
   const model = get(env, "AI_MODEL") ?? (provider === "openai-compatible" ? undefined : DEFAULT_MODELS[provider]);
-  const baseUrl = get(env, "AI_BASE_URL") ?? (provider === "gemini" ? GEMINI_BASE_URL : undefined);
+  const baseUrl =
+    get(env, "AI_BASE_URL") ??
+    (provider === "gemini" ? GEMINI_BASE_URL : undefined) ??
+    (provider === "openai-compatible" && isOpenRouterKey(apiKey) ? OPENROUTER_BASE_URL : undefined);
 
   if (provider === "openai-compatible") {
     if (!baseUrl) return { provider: "none", reason: "AI_PROVIDER=openai-compatible needs AI_BASE_URL" };
@@ -111,7 +120,8 @@ export function resolveAiConfig(env: Env): AiConfig {
     if (guessed) return build(env, guessed);
     return {
       provider: "none",
-      reason: "AI_API_KEY is set but its provider can't be inferred; set AI_PROVIDER (and AI_BASE_URL/AI_MODEL if needed)",
+      reason:
+        "AI_API_KEY is set but its provider can't be inferred; set AI_PROVIDER (and AI_BASE_URL/AI_MODEL if needed)",
     };
   }
   return { provider: "none", reason: "No AI API key configured" };

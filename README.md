@@ -55,7 +55,10 @@ reports it, and the admin page shows it in its header. Examples:
 OPENAI_API_KEY=sk-...                        # OpenAI
 GEMINI_API_KEY=AIza...                       # Google Gemini (via its OpenAI-compatible endpoint)
 ANTHROPIC_API_KEY=sk-ant-...                 # Anthropic Claude
-AI_PROVIDER=openai-compatible                # Groq / Mistral / DeepSeek / OpenRouter / Ollama ...
+AI_API_KEY=sk-or-v1-...                      # OpenRouter (any model it hosts, incl. free ones)
+AI_MODEL=<model id from its OpenRouter page, e.g. google/...:free>
+
+AI_PROVIDER=openai-compatible                # Groq / Mistral / DeepSeek / Ollama ...
 AI_BASE_URL=https://api.groq.com/openai/v1
 AI_API_KEY=gsk_...
 AI_MODEL=<a model on that service that supports tool calling>
@@ -73,7 +76,7 @@ and after changing the Prisma schema.
 | Variable | Where | Required | Purpose |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | `.env` → backend | No | **Set any one** and that provider is used. **Without a key the app still works**: requests that need the model's judgment are escalated to a human instead. |
-| `AI_API_KEY` | `.env` → backend | No | Generic key. The provider is inferred from its prefix (`sk-ant-` Anthropic, `sk-` OpenAI, `AIza` Gemini), or set `AI_PROVIDER`. |
+| `AI_API_KEY` | `.env` → backend | No | Generic key. The provider is inferred from its prefix (`sk-ant-` Anthropic, `sk-or-` OpenRouter, `sk-` OpenAI, `AIza` Gemini), or set `AI_PROVIDER`. |
 | `AI_PROVIDER` | `.env` → backend | No | Force a provider: `anthropic`, `openai`, `gemini` or `openai-compatible`. |
 | `AI_MODEL` | `.env` → backend | No | Override the model. Defaults: `claude-opus-5`, `gpt-4.1`, `gemini-2.5-flash`. Any model with tool/function calling works. |
 | `AI_BASE_URL` | `.env` → backend | For `openai-compatible` | API base URL, e.g. `https://api.groq.com/openai/v1`, or `http://host.docker.internal:11434/v1` for a local Ollama. |
