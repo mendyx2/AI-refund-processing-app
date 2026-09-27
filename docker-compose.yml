@@ -1,9 +1,10 @@
 services:
   db-seed:
-    build: ./backend
-    command: ["python", "-m", "app.seed"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.seed
     environment:
-      DATABASE_URL: sqlite:////app/db/app.db
+      DATABASE_URL: file:/app/db/app.db
     volumes:
       - sqlite-data:/app/db
     restart: "no"

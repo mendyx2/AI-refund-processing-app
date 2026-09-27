@@ -16,3 +16,6 @@ backend/db/
 .env
 .env*.local
 .DS_Store
+
+# Prisma generated client
+backend/src/generated/
