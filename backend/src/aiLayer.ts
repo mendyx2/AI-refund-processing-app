@@ -128,12 +128,29 @@ const INJECTION_PATTERNS: ReadonlyArray<[label: string, pattern: RegExp]> = [
   ["delimiter_spoofing", /<\/?\s*(customer_provided|system|instructions?|assistant|user)\b/],
 ];
 
-/** Lowercases, applies NFKC, and strips zero-width/format characters used to dodge matching. */
-function normalizeForScan(text: string): string {
-  return text
+/** Cyrillic/Greek letters that look like Latin ones, folded so "іgnore" (Cyrillic і) still matches. */
+const CONFUSABLES: Record<string, string> = {
+  а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x",
+  і: "i", ј: "j", ѕ: "s", ԁ: "d", ɡ: "g", α: "a", β: "b", ε: "e", ι: "i", κ: "k", ν: "v", ο: "o",
+  ρ: "p", τ: "t", υ: "u", χ: "x",
+};
+const CONFUSABLE_RE = new RegExp(`[${Object.keys(CONFUSABLES).join("")}]`, "g");
+
+/**
+ * Canonical forms of `text` to scan: NFKC, zero-width characters removed,
+ * lowercase, look-alike letters folded. Two variants, because line breaks and
+ * runs of whitespace between words ("ignore\nall previous\ninstructions")
+ * must not dodge a phrase match, while role markers ("system:") are only
+ * meaningful at the start of a line.
+ */
+function scanVariants(text: string): string[] {
+  const base = text
     .normalize("NFKC")
-    .replace(/[​-‏⁠-⁤﻿]/g, "")
-    .toLowerCase();
+    .replace(/[\u200B-\u200F\u2060-\u2064\uFEFF]/g, "")
+    .toLowerCase()
+    .replace(CONFUSABLE_RE, (ch) => CONFUSABLES[ch]);
+  const lines = base.replace(/[^\S\n]+/g, " ");
+  return [lines, lines.replace(/\s+/g, " ")];
 }
 
 /**
@@ -142,10 +159,10 @@ function normalizeForScan(text: string): string {
  * false positives only cost a review.
  */
 export function detectInjection(text: string): string[] {
-  const normalized = normalizeForScan(text);
+  const variants = scanVariants(text);
   const hits = new Set<string>();
   for (const [label, pattern] of INJECTION_PATTERNS) {
-    if (pattern.test(normalized)) hits.add(label);
+    if (variants.some((v) => pattern.test(v))) hits.add(label);
   }
   return [...hits];
 }

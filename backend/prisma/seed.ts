@@ -2,7 +2,9 @@
  * Seeds ~15 customers with order histories that exercise every rule in
  * data/refund_policy.md. Dates are relative to the moment the seed runs so the
  * scenarios (recent vs. >60 days old, suspicious bursts) stay valid over time.
- * The script clears existing rows first, so it is safe to re-run.
+ * By default it clears existing rows first, so it is safe to re-run.
+ * With --if-empty it leaves a database that already has customers untouched
+ * (used by docker compose, so restarts don't wipe submitted requests).
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
@@ -17,6 +19,11 @@ const daysAgo = (d: number) => new Date(NOW.getTime() - d * 24 * 60 * 60 * 1000)
 const dollars = (amount: number) => Math.round(amount * 100);
 
 async function main() {
+  if (process.argv.includes("--if-empty") && (await prisma.customer.count()) > 0) {
+    console.log("Database already has data; skipping seed (run `npm run db:reset` to start over).");
+    return;
+  }
+
   await prisma.refundRequest.deleteMany();
   await prisma.order.deleteMany();
   await prisma.customer.deleteMany();

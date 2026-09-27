@@ -23,31 +23,40 @@ docker-compose.yml
 
 ## Running locally
 
+From a clean checkout (needs Docker with Compose v2):
+
 ```bash
-docker compose up --build
+cp .env.example .env        # optional: add your ANTHROPIC_API_KEY
+docker compose up --build   # or: docker-compose up --build
 ```
 
-Services:
+Then open http://localhost:3000/support (customer chat) or
+http://localhost:3000/admin (staff dashboard). The API is on
+http://localhost:8000.
+
+Startup order:
 
 | Service    | Port | Notes |
 |------------|------|-------|
-| `db-seed`  | —    | One-shot job: applies the Prisma schema to SQLite on the shared `sqlite-data` volume and runs `prisma/seed.ts`, then exits. |
-| `backend`  | 8000 | Express API. Starts only after `db-seed` completes successfully. `GET /health` → `{"status":"ok","database":"ok"}` |
-| `frontend` | 3000 | Starts once the backend healthcheck passes. Customer chat at http://localhost:3000/support, admin dashboard at http://localhost:3000/admin. |
+| `db-seed`  | —    | One-shot job: creates the SQLite schema on the `sqlite-data` volume and loads `prisma/seed.ts` **if the database is empty**, then exits. |
+| `backend`  | 8000 | Express API. Starts after `db-seed` succeeds. Healthcheck: `GET /health`. |
+| `frontend` | 3000 | Next.js. Starts once the backend is healthy. |
 
-The seed job re-runs (drop + recreate) on every `docker compose up`. Use `docker compose down -v` to also remove the volume.
-
-To have Claude assess judgment-call requests, export `ANTHROPIC_API_KEY` before
-`docker compose up`. Without it, those requests are escalated to a human.
+- **Data persists across restarts** in the `sqlite-data` volume. Start over
+  with `docker compose down -v`. Do that after a schema change too, since
+  `prisma db push` won't drop data on its own.
+- **`ANTHROPIC_API_KEY` is optional.** Without it, requests that need
+  Claude's judgment are escalated to a human instead of failing.
 
 ## Backend
 
 ```bash
 cd backend
 npm install          # also generates the Prisma client (src/generated/, git-ignored)
-npm run db:reset     # create ./db/app.db from the schema and seed it
+npm run db:setup     # create ./db/app.db from the schema; seed it if empty
+npm run db:reset     # drop everything and reseed
 npm run dev          # API on http://localhost:8000 (watch mode)
-npm test             # Vitest: policy engine, AI layer, seed scenarios, API routes
+npm test             # Vitest: policy engine, AI layer, guardrails, seed scenarios, API routes
 npm run typecheck
 ```
 
@@ -58,6 +67,7 @@ npm run typecheck
 | `POST /refund-requests` | Submit `{ customerId, orderId, message, reason?, amountCents? }`. Runs the policy engine, then the AI layer for judgment calls, and saves the decision with its reasoning trace, injection flags, and a plain-language `customerMessage`. Returns the saved request (201). `reason` defaults to `OTHER`; `amountCents` defaults to the order total. |
 | `GET /refund-requests` | All requests, newest first (admin dashboard). Optional `?status=PENDING\|APPROVED\|DENIED\|ESCALATED`. |
 | `GET /refund-requests/:id` | Full detail, including `reasoningLog`. |
+| `POST /refund-requests/:id/rerun` | Staff action: re-runs an open (pending/escalated) request through the pipeline, judged as of its original date. `409` for approved/denied requests. |
 | `GET /customers` | Customers by name (the support page's "sign in as" dropdown; no real auth yet). |
 | `GET /customers/:id/orders` | A customer's orders, newest first, with their refund requests (chat UI order lookup). |
 | `GET /health` | Liveness and database check. |
@@ -98,6 +108,7 @@ it's a build arg in `docker-compose.yml`.
 filter tabs by status and an "only injection / suspicion flags" toggle.
 Expanding a row loads its detail: the customer's message, Claude's confidence,
 all flags, what the customer was told, and the step-by-step reasoning trace.
+Pending and escalated requests have a **Re-run decision** button.
 
 ```bash
 cd frontend

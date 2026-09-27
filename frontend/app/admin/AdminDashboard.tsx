@@ -53,14 +53,40 @@ function flagStyle(flag: string): { label: string; cls: string } {
 /** Injection or suspicion signals: the ones worth a reviewer's attention first. */
 const isRiskFlag = (f: string) => f.startsWith("injection:") || f === "suspicious_pattern";
 
-const errorText = (err: unknown) =>
-  err instanceof ApiError && err.code !== "not_found"
-    ? err.message
-    : "Couldn't load this data. Please try again.";
+const errorText = (err: unknown) => {
+  if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
+  if (err.code === "conflict") return "This request has already been decided. Refresh to see the latest.";
+  if (err.code === "not_found") return "This request no longer exists. Refresh the list.";
+  return err.message;
+};
+
+/** Only open requests can be re-run; approved and denied are final. */
+const canRerun = (status: RefundStatus) => status === "PENDING" || status === "ESCALATED";
+
+const toListItem = (d: RefundDetail): RefundListItem => ({
+  id: d.id,
+  status: d.status,
+  reason: d.reason,
+  amountCents: d.amountCents,
+  requestedAt: d.requestedAt,
+  resolvedAt: d.resolvedAt,
+  decisionSource: d.decisionSource,
+  injectionDetected: d.injectionDetected,
+  flags: d.flags,
+  customer: d.customer,
+  order: {
+    id: d.order.id,
+    orderNumber: d.order.orderNumber,
+    productName: d.order.productName,
+    totalCents: d.order.totalCents,
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
+
+type RerunState = { state: "running" } | { state: "error"; message: string } | { state: "done"; status: RefundStatus };
 
 type DetailState = { state: "loading" } | { state: "error"; message: string } | { state: "ok"; data: RefundDetail };
 
@@ -72,6 +98,7 @@ export default function AdminDashboard() {
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [details, setDetails] = useState<Record<number, DetailState>>({});
+  const [rerunState, setRerunState] = useState<Record<number, RerunState>>({});
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
@@ -79,6 +106,7 @@ export default function AdminDashboard() {
     try {
       setRows(await api.listRefundRequests(signal));
       setDetails({}); // decisions may have changed; refetch on expand
+      setRerunState({});
     } catch (err) {
       if (!signal?.aborted) setListError(errorText(err));
     } finally {
@@ -101,6 +129,18 @@ export default function AdminDashboard() {
       setDetails((d) => ({ ...d, [id]: { state: "error", message: errorText(err) } }));
     }
   }, []);
+
+  async function rerun(id: number) {
+    setRerunState((r) => ({ ...r, [id]: { state: "running" } }));
+    try {
+      const data = await api.rerunRefundRequest(id);
+      setDetails((d) => ({ ...d, [id]: { state: "ok", data } }));
+      setRows((rs) => rs?.map((r) => (r.id === id ? toListItem(data) : r)) ?? rs);
+      setRerunState((r) => ({ ...r, [id]: { state: "done", status: data.status } }));
+    } catch (err) {
+      setRerunState((r) => ({ ...r, [id]: { state: "error", message: errorText(err) } }));
+    }
+  }
 
   function toggle(id: number) {
     setExpanded((prev) => {
@@ -185,10 +225,18 @@ export default function AdminDashboard() {
               <th scope="col" className="w-10 px-3 py-2">
                 <span className="sr-only">Expand</span>
               </th>
-              <th scope="col" className="px-3 py-2 font-medium">Customer</th>
-              <th scope="col" className="px-3 py-2 font-medium">Order</th>
-              <th scope="col" className="px-3 py-2 font-medium">Decision</th>
-              <th scope="col" className="px-3 py-2 font-medium">Submitted</th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                Customer
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                Order
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                Decision
+              </th>
+              <th scope="col" className="px-3 py-2 font-medium">
+                Submitted
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -268,7 +316,12 @@ export default function AdminDashboard() {
                     {open && (
                       <tr id={`detail-${row.id}`} className="bg-slate-50">
                         <td colSpan={5} className="px-3 pb-5 pt-1 sm:pl-12">
-                          <DetailPanel detail={details[row.id]} onRetry={() => void loadDetail(row.id)} />
+                          <DetailPanel
+                            detail={details[row.id]}
+                            onRetry={() => void loadDetail(row.id)}
+                            rerun={rerunState[row.id]}
+                            onRerun={() => void rerun(row.id)}
+                          />
                         </td>
                       </tr>
                     )}
@@ -287,9 +340,23 @@ export default function AdminDashboard() {
 // Expanded row
 // ---------------------------------------------------------------------------
 
-function DetailPanel({ detail, onRetry }: { detail: DetailState | undefined; onRetry: () => void }) {
+function DetailPanel({
+  detail,
+  onRetry,
+  rerun,
+  onRerun,
+}: {
+  detail: DetailState | undefined;
+  onRetry: () => void;
+  rerun: RerunState | undefined;
+  onRerun: () => void;
+}) {
   if (!detail || detail.state === "loading") {
-    return <p className="py-3 text-sm text-slate-500" aria-busy="true">Loading details…</p>;
+    return (
+      <p className="py-3 text-sm text-slate-500" aria-busy="true">
+        Loading details…
+      </p>
+    );
   }
   if (detail.state === "error") {
     return (
@@ -306,46 +373,77 @@ function DetailPanel({ detail, onRetry }: { detail: DetailState | undefined; onR
   const aiStep = d.reasoningLog?.find((s): s is Extract<ReasoningStep, { stage: "ai" }> => s.stage === "ai");
   const flags = d.flags ?? [];
 
-  return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-      <div className="space-y-4">
-        <Field label="Customer's message">
-          {d.description ? (
-            <blockquote className="whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white p-3 text-slate-800">
-              {d.description}
-            </blockquote>
-          ) : (
-            <span className="text-slate-500">None</span>
-          )}
-        </Field>
-        <Field label="Reason code">{humanize(d.reason).toLowerCase()}</Field>
-        <Field label="Confidence">
-          <Confidence step={aiStep} />
-        </Field>
-        <Field label="Flags">
-          {flags.length ? (
-            <div className="flex flex-wrap gap-1">
-              {flags.map((f) => (
-                <FlagChip key={f} flag={f} />
-              ))}
-            </div>
-          ) : (
-            <span className="text-slate-500">None</span>
-          )}
-        </Field>
-        {d.customerMessage && <Field label="Told the customer">{d.customerMessage}</Field>}
-      </div>
+  const running = rerun?.state === "running";
 
-      <Field label="Reasoning trace">
-        {d.reasoningLog?.length ? (
-          <Trace steps={d.reasoningLog} />
-        ) : (
-          <p className="text-slate-500">
-            No decision trace. This request came from the seed data, not through the decision pipeline.
-            {d.decisionNotes && <span className="mt-1 block text-slate-700">Notes: {d.decisionNotes}</span>}
-          </p>
-        )}
-      </Field>
+  return (
+    <div className="space-y-4">
+      {(canRerun(d.status) || rerun) && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm">
+          {canRerun(d.status) && (
+            <button
+              onClick={onRerun}
+              disabled={running}
+              className="rounded-md bg-slate-900 px-3 py-1.5 font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+            >
+              {running ? "Re-running…" : "Re-run decision"}
+            </button>
+          )}
+          <span aria-live="polite" className="text-slate-600">
+            {running && "Running the policy engine and AI layer again…"}
+            {rerun?.state === "done" && (
+              <>
+                Re-run complete:{" "}
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS[rerun.status].cls}`}>
+                  {STATUS[rerun.status].label}
+                </span>
+              </>
+            )}
+            {rerun?.state === "error" && <span className="text-rose-700">{rerun.message}</span>}
+            {!rerun &&
+              "Runs this request through the policy engine and AI layer again, judged as of its original date."}
+          </span>
+        </div>
+      )}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <div className="space-y-4">
+          <Field label="Customer's message">
+            {d.description ? (
+              <blockquote className="whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white p-3 text-slate-800">
+                {d.description}
+              </blockquote>
+            ) : (
+              <span className="text-slate-500">None</span>
+            )}
+          </Field>
+          <Field label="Reason code">{humanize(d.reason).toLowerCase()}</Field>
+          <Field label="Confidence">
+            <Confidence step={aiStep} />
+          </Field>
+          <Field label="Flags">
+            {flags.length ? (
+              <div className="flex flex-wrap gap-1">
+                {flags.map((f) => (
+                  <FlagChip key={f} flag={f} />
+                ))}
+              </div>
+            ) : (
+              <span className="text-slate-500">None</span>
+            )}
+          </Field>
+          {d.customerMessage && <Field label="Told the customer">{d.customerMessage}</Field>}
+        </div>
+
+        <Field label="Reasoning trace">
+          {d.reasoningLog?.length ? (
+            <Trace steps={d.reasoningLog} />
+          ) : (
+            <p className="text-slate-500">
+              No decision trace. This request came from the seed data, not through the decision pipeline.
+              {d.decisionNotes && <span className="mt-1 block text-slate-700">Notes: {d.decisionNotes}</span>}
+            </p>
+          )}
+        </Field>
+      </div>
     </div>
   );
 }
@@ -403,6 +501,21 @@ function Trace({ steps }: { steps: ReasoningStep[] }) {
 
 function TraceStep({ step }: { step: ReasoningStep }) {
   switch (step.stage) {
+    case "rerun":
+      return (
+        <div>
+          <StepTitle>
+            Re-run by staff <span className="text-slate-500">· {dateTime(step.at)}</span>
+          </StepTitle>
+          <p className="mt-1 text-slate-600">
+            Previously {step.previousStatus.toLowerCase()}
+            {step.previousSource
+              ? ` via ${SOURCE[step.previousSource as DecisionSource] ?? humanize(step.previousSource)}`
+              : ""}
+            . Judged as of {dateTime(step.evaluatedAsOf)}.
+          </p>
+        </div>
+      );
     case "policy_engine":
       return (
         <div>
@@ -477,14 +590,10 @@ function TraceStep({ step }: { step: ReasoningStep }) {
         <div>
           <StepTitle>
             Final: <b>{step.decision}</b>{" "}
-            <span className="text-slate-500">
-              via {SOURCE[step.source as DecisionSource] ?? humanize(step.source)}
-            </span>
+            <span className="text-slate-500">via {SOURCE[step.source as DecisionSource] ?? humanize(step.source)}</span>
           </StepTitle>
           {step.conflict && (
-            <p className="mt-1 rounded-md bg-amber-50 p-2 text-amber-900">
-              Rule overrode AI: {step.conflict}
-            </p>
+            <p className="mt-1 rounded-md bg-amber-50 p-2 text-amber-900">Rule overrode AI: {step.conflict}</p>
           )}
         </div>
       );

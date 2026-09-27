@@ -5,6 +5,7 @@ import { RefundReason, RefundStatus } from "../generated/prisma/enums";
 import {
   getRefundRequest,
   listRefundRequests,
+  rerunRefundRequest,
   submitRefundRequest,
   type ServiceDeps,
 } from "../services/refundService";
@@ -41,6 +42,12 @@ export function refundRequestsRouter(deps: ServiceDeps): Router {
   router.get("/:id", async (req, res) => {
     const { id } = idParam.parse(req.params);
     res.json(await getRefundRequest(deps.prisma, id));
+  });
+
+  // Staff action (no auth yet, like the rest of the admin API).
+  router.post("/:id/rerun", async (req, res) => {
+    const { id } = idParam.parse(req.params);
+    res.json(await rerunRefundRequest(deps, id));
   });
 
   return router;

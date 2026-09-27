@@ -34,6 +34,14 @@ export interface SubmitRefundInput {
 // ---------------------------------------------------------------------------
 
 export type ReasoningStep =
+  | {
+      stage: "rerun";
+      at: string;
+      /** Policy is evaluated as of the original request time. */
+      evaluatedAsOf: string;
+      previousStatus: string;
+      previousSource: string | null;
+    }
   | { stage: "policy_engine"; decision: string; rule: string; reasons: string[] }
   | { stage: "injection_scan"; detected: boolean; labels: string[] }
   | {
@@ -191,6 +199,37 @@ export async function getCustomerOrders(prisma: Db, customerId: number) {
 // Submission
 // ---------------------------------------------------------------------------
 
+const OPEN_STATUSES: RefundStatus[] = ["PENDING", "ESCALATED"];
+
+/** Decision columns written for a new or re-run request. */
+function decisionData(
+  result: AssessmentResult,
+  facts: {
+    order: Parameters<typeof customerMessage>[0]["order"];
+    request: Parameters<typeof customerMessage>[0]["request"];
+    asOf: Date;
+    decidedAt: Date;
+    extraSteps?: ReasoningStep[];
+  },
+) {
+  return {
+    status: STATUS[result.decision],
+    resolvedAt: result.decision === "escalated" ? null : facts.decidedAt,
+    decisionNotes: decisionSummary(result),
+    customerMessage: customerMessage({
+      decision: result.decision,
+      rule: result.policy.rule,
+      order: facts.order,
+      request: facts.request,
+      now: facts.asOf,
+    }),
+    decisionSource: result.source,
+    injectionDetected: injectionLabels(result.flags).length > 0,
+    flags: result.flags,
+    reasoningLog: [...(facts.extraSteps ?? []), ...buildReasoningLog(result)] as unknown as Prisma.InputJsonValue,
+  } satisfies Prisma.RefundRequestUpdateInput;
+}
+
 export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefundInput) {
   const { prisma, assessor } = deps;
   const now = (deps.now ?? (() => new Date()))();
@@ -205,7 +244,7 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
   }
 
   const open = await prisma.refundRequest.findFirst({
-    where: { orderId: order.id, status: { in: ["PENDING", "ESCALATED"] } },
+    where: { orderId: order.id, status: { in: OPEN_STATUSES } },
     select: { id: true },
   });
   if (open) throw conflict(`Order ${order.orderNumber} already has an open refund request (#${open.id})`);
@@ -239,20 +278,7 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
         description: request.description,
         amountCents: request.amountCents,
         requestedAt: now,
-        status: STATUS[result.decision],
-        resolvedAt: result.decision === "escalated" ? null : now,
-        decisionNotes: decisionSummary(result),
-        customerMessage: customerMessage({
-          decision: result.decision,
-          rule: result.policy.rule,
-          order,
-          request,
-          now,
-        }),
-        decisionSource: result.source,
-        injectionDetected: injectionLabels(result.flags).length > 0,
-        flags: result.flags,
-        reasoningLog: buildReasoningLog(result) as unknown as Prisma.InputJsonValue,
+        ...decisionData(result, { order, request, asOf: now, decidedAt: now }),
       },
     });
     if (result.decision === "approved") {
@@ -262,4 +288,67 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
   });
 
   return getRefundRequest(prisma, created.id);
+}
+
+/**
+ * Staff action: runs an open (pending or escalated) request through the
+ * pipeline again, e.g. a seeded request, or one escalated while Claude was
+ * unavailable. The policy is evaluated as of the original request time, so a
+ * late re-run can't push a request outside its refund window. Approved and
+ * denied requests are final.
+ */
+export async function rerunRefundRequest(deps: ServiceDeps, id: number) {
+  const { prisma, assessor } = deps;
+  const decidedAt = (deps.now ?? (() => new Date()))();
+
+  const existing = await prisma.refundRequest.findUnique({ where: { id }, include: { customer: true, order: true } });
+  if (!existing) throw notFound(`Refund request ${id} not found`);
+  if (!OPEN_STATUSES.includes(existing.status)) {
+    throw conflict(`Refund request ${id} is ${existing.status.toLowerCase()}; only pending or escalated requests can be re-run`);
+  }
+
+  // Includes this request itself, at its original time.
+  const history = await prisma.refundRequest.findMany({
+    where: { customerId: existing.customerId },
+    select: { requestedAt: true, reason: true, status: true },
+  });
+
+  const asOf = existing.requestedAt;
+  const { order, customer } = existing;
+  const request = {
+    reason: existing.reason,
+    amountCents: existing.amountCents,
+    description: existing.description,
+    requestedAt: existing.requestedAt,
+  };
+
+  const result = await assessor.assessRefundRequest({
+    customer: { name: customer.name, email: customer.email },
+    order,
+    request,
+    customerRequests: history,
+    now: asOf,
+  });
+
+  const rerunStep: ReasoningStep = {
+    stage: "rerun",
+    at: decidedAt.toISOString(),
+    evaluatedAsOf: asOf.toISOString(),
+    previousStatus: existing.status,
+    previousSource: existing.decisionSource,
+  };
+
+  await prisma.$transaction(async (tx) => {
+    // Only update if still open, so two staff re-running at once can't both decide it.
+    const { count } = await tx.refundRequest.updateMany({
+      where: { id, status: { in: OPEN_STATUSES } },
+      data: decisionData(result, { order, request, asOf, decidedAt, extraSteps: [rerunStep] }),
+    });
+    if (count === 0) throw conflict(`Refund request ${id} was decided by someone else in the meantime`);
+    if (result.decision === "approved") {
+      await tx.order.update({ where: { id: order.id }, data: { status: "REFUNDED" } });
+    }
+  });
+
+  return getRefundRequest(prisma, id);
 }

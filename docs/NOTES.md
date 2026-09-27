@@ -2,6 +2,39 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Re-run, guardrails, and Compose
+
+- **Re-run decision** (`POST /refund-requests/:id/rerun`, button on `/admin`):
+  - Only open requests (PENDING / ESCALATED); approved and denied are final (409).
+  - The policy is evaluated **as of the original request time**, so a late
+    re-run can't push a request outside its window.
+  - Updates the same record, only if it is still open when saving, so two
+    staff re-running at once can't both decide it.
+  - Adds a leading `rerun` step to the trace (when, previous status and
+    source). The earlier trace itself is replaced, not kept. Add a history
+    table if full audit history is needed.
+  - Uses: seeded pending requests; requests escalated while Claude was
+    unavailable.
+- **Injection-scan review fixes:** `.` in the regexes didn't match line
+  breaks, so "ignore\nall previous\ninstructions" and "You  are\tnow"
+  evaded the scan. So did Cyrillic look-alike letters ("іgnore"). The scanner
+  now checks a whitespace-collapsed variant and folds common Cyrillic/Greek
+  look-alikes. Still a lightweight net: paraphrases, other languages, and
+  spaced-out letters can get past it. That's acceptable because Claude is
+  never the final say (see guardrails).
+- **Guardrail tests** (`backend/src/guardrails.test.ts`) run the real engine
+  and AI layer against a fake Claude that always says "approve, 100%":
+  injection variants escalate without calling Claude; a $600 request and a
+  final-sale damage claim always go to a human; message text can't move a
+  final-sale item into the damage exception. A 648-case sweep checks that the
+  final decision is never more permissive than the policy engine's and that
+  Claude alone never produces a denial.
+- **Compose:** `db-seed` now runs `db:setup` (schema + seed only if empty)
+  instead of a full reset, so restarts keep data. Reset with
+  `docker compose down -v`. The frontend has a healthcheck, and both
+  long-running services restart `unless-stopped`. `.env.example` documents
+  `ANTHROPIC_API_KEY`.
+
 ## Admin dashboard (`frontend/app/admin`)
 
 - **No auth.** `/admin` and the `GET /refund-requests*` endpoints are open.
@@ -136,7 +169,5 @@ Decisions and open questions to fold into the real docs. Newest first.
 
 - `db-seed` uses the full `node:22` image, not `node:22-slim`: Prisma's schema
   engine needs OpenSSL, which slim lacks.
-- The seed job resets the database on every `docker compose up` (drop +
-  recreate). Because `backend` depends on `db-seed`, even
-  `docker compose start backend` / `restart backend` re-runs the seed and wipes
-  submitted requests. This must change once the app writes real data.
+- ~~The seed job wiped the database on every `up`/restart.~~ Fixed: it now
+  seeds only an empty database (see "Re-run, guardrails, and Compose").

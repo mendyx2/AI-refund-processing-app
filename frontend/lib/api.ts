@@ -49,6 +49,7 @@ export interface RefundResult {
 
 /** One step of the stored decision trace (backend/src/services/refundService.ts). */
 export type ReasoningStep =
+  | { stage: "rerun"; at: string; evaluatedAsOf: string; previousStatus: RefundStatus; previousSource: string | null }
   | { stage: "policy_engine"; decision: "APPROVE" | "DENY" | "ESCALATE"; rule?: string; reasons: string[] }
   | { stage: "injection_scan"; detected: boolean; labels: string[] }
   | { stage: "ai"; consulted: false; skippedBecause: string }
@@ -158,6 +159,10 @@ export const api = {
 
   getRefundRequest: (id: number, signal?: AbortSignal) =>
     request<RefundDetail>(`/refund-requests/${id}`, { signal }),
+
+  /** Staff action; may consult Claude. */
+  rerunRefundRequest: (id: number) =>
+    request<RefundDetail>(`/refund-requests/${id}/rerun`, { method: "POST", timeoutMs: 120_000 }),
 
   /** May consult Claude, so it gets a longer timeout than the lookups. */
   submitRefundRequest: (body: NewRefundRequest) =>

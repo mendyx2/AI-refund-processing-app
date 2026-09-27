@@ -10,6 +10,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",
+    "db:setup": "prisma db push && tsx prisma/seed.ts --if-empty",
     "db:reset": "prisma db push --force-reset && prisma db seed",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
