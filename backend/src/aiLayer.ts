@@ -384,7 +384,11 @@ export class RefundAiLayer {
     // 4. Judgment call: consult Claude, then reconcile against the rules.
     const outcome = await this.consultClaude(ctx, policy);
     if ("error" in outcome) {
-      this.logger.warn("ai_unavailable", { orderNumber: ctx.order.orderNumber, error: outcome.error });
+      this.logger.warn("ai_unavailable", {
+        orderNumber: ctx.order.orderNumber,
+        error: outcome.error,
+        detail: outcome.detail,
+      });
       return { ...base, decision: "escalated", source: "ai_unavailable", flags: [outcome.error] };
     }
 
@@ -410,26 +414,32 @@ export class RefundAiLayer {
   private async consultClaude(
     ctx: RefundContext,
     policy: PolicyEvaluation,
-  ): Promise<{ assessment: RefundAssessment } | { error: string }> {
+  ): Promise<{ assessment: RefundAssessment } | { error: string; detail?: string }> {
+    const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
+      model: MODEL,
+      max_tokens: 16000,
+      thinking: { type: "adaptive" },
+      // Re-runs a safety-declined request on Anthropic's recommended fallback model.
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: this.systemPrompt,
+      tools: [ASSESSMENT_TOOL],
+      // Forced tool_choice is incompatible with thinking; the prompt requires the
+      // call, and a missing call is handled below.
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
+      messages: [{ role: "user", content: buildUserMessage(ctx, policy) }],
+    };
+
+    // Only the SDK call is guarded: any failure there (API error, network,
+    // missing credentials) means "AI unavailable" and escalates to a human.
     let response: Anthropic.Beta.BetaMessage;
     try {
-      response = await this.client.beta.messages.create({
-        model: MODEL,
-        max_tokens: 16000,
-        thinking: { type: "adaptive" },
-        // Re-runs a safety-declined request on Anthropic's recommended fallback model.
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        system: this.systemPrompt,
-        tools: [ASSESSMENT_TOOL],
-        // Forced tool_choice is incompatible with thinking; the prompt requires the
-        // call, and a missing call is handled below.
-        tool_choice: { type: "auto", disable_parallel_tool_use: true },
-        messages: [{ role: "user", content: buildUserMessage(ctx, policy) }],
-      });
+      response = await this.client.beta.messages.create(params);
     } catch (err) {
-      if (err instanceof Anthropic.APIError) return { error: `ai_api_error_${err.status ?? "network"}` };
-      throw err;
+      if (err instanceof Anthropic.APIError) {
+        return { error: `ai_api_error_${err.status ?? "network"}`, detail: err.message };
+      }
+      return { error: "ai_client_error", detail: err instanceof Error ? err.message : String(err) };
     }
 
     if (response.stop_reason === "refusal") return { error: "ai_refused" };

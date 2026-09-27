@@ -1,8 +1,5 @@
-__pycache__/
-*.pyc
-.venv/
+node_modules/
+src/generated/
 db/
 *.db
 .env
-node_modules/
-src/generated/

@@ -295,10 +295,15 @@ describe("RefundAiLayer.assessRefundRequest", () => {
     expect(result).toMatchObject({ decision: "escalated", source: "ai_unavailable", flags: ["ai_api_error_500"] });
   });
 
-  it("does not swallow non-API errors", async () => {
-    const { layer } = setup(async () => {
-      throw new TypeError("bug");
+  it("escalates when the client fails outside the API (e.g. missing credentials)", async () => {
+    const { layer, warn } = setup(async () => {
+      throw new Error("Could not resolve authentication method.");
     });
-    await expect(layer.assessRefundRequest(context())).rejects.toThrow("bug");
+    const result = await layer.assessRefundRequest(context());
+    expect(result).toMatchObject({ decision: "escalated", source: "ai_unavailable", flags: ["ai_client_error"] });
+    expect(warn).toHaveBeenCalledWith(
+      "ai_unavailable",
+      expect.objectContaining({ detail: "Could not resolve authentication method." }),
+    );
   });
 });

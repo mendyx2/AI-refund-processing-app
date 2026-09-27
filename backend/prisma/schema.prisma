@@ -63,18 +63,25 @@ model Order {
 }
 
 model RefundRequest {
-  id            Int          @id @default(autoincrement())
-  orderId       Int
-  order         Order        @relation(fields: [orderId], references: [id])
-  customerId    Int
-  customer      Customer     @relation(fields: [customerId], references: [id])
-  reason        RefundReason
-  description   String?
-  amountCents   Int
-  status        RefundStatus @default(PENDING)
-  requestedAt   DateTime     @default(now())
-  resolvedAt    DateTime?
-  decisionNotes String?
+  id                Int          @id @default(autoincrement())
+  orderId           Int
+  order             Order        @relation(fields: [orderId], references: [id])
+  customerId        Int
+  customer          Customer     @relation(fields: [customerId], references: [id])
+  reason            RefundReason
+  description       String?
+  amountCents       Int
+  status            RefundStatus @default(PENDING)
+  requestedAt       DateTime     @default(now())
+  resolvedAt        DateTime?
+  decisionNotes     String?
+  /// Which stage decided: policy_engine | injection_guard | ai_assisted | ai_unavailable
+  decisionSource    String?
+  injectionDetected Boolean      @default(false)
+  /// string[] of review flags (injection labels, AI flags, failure codes)
+  flags             Json?
+  /// Ordered decision trace; see src/services/refundService.ts
+  reasoningLog      Json?
 
   @@index([customerId, requestedAt])
   @@index([orderId])

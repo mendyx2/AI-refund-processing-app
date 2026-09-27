@@ -2,6 +2,32 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## API (`backend/src/routes`, `backend/src/services/refundService.ts`)
+
+- **Express replaced FastAPI.** Once the API moved to Express, the Python app
+  was removed: the backend is now TypeScript only. One Docker image runs both
+  `db-seed` (`npm run db:reset`) and the API (`node --import tsx
+  src/server.ts`). TS runs through `tsx` with no build step. Add a compile
+  step if startup time or image size starts to matter.
+- **`reason` is chosen by the client, not inferred.** The chat sends free
+  text plus an optional reason code (default `OTHER`). The reason decides the
+  hard rules (30- vs 60-day window), so it is never derived from Claude's
+  reading of the message: Claude must not be able to move a hard rule.
+- **One open request per order.** A new request is rejected with 409 while
+  the order has a `PENDING` or `ESCALATED` one.
+- **Approval marks the order `REFUNDED`** in the same transaction. It happens
+  even for partial refunds, so a second refund on that order is denied.
+  Revisit if partial refunds become common.
+- **The customer's new request counts toward the suspicious-pattern check.**
+- **Another customer's order returns 404, not 403**, so order IDs don't leak.
+- **Stored per request:** `status`, `decisionSource`, `decisionNotes` (a
+  one-line summary), `injectionDetected`, `flags` (JSON string[]),
+  `reasoningLog` (JSON: policy_engine → injection_scan → ai → final).
+- **Resetting the local DB:** Prisma refuses `db push --force-reset` when it
+  detects an AI agent, unless the user explicitly consents. In Docker
+  (`db-seed`) it runs normally. Locally, `npm run db:reset` works from your
+  own terminal.
+
 ## AI layer (`backend/src/aiLayer.ts`)
 
 - **Claude never finalizes a decision.** Pipeline order:
@@ -21,9 +47,11 @@ Decisions and open questions to fold into the real docs. Newest first.
   - When the rules permit approval, Claude can **confirm** it (confidence
     ≥ 0.8) or send it to a human. A Claude "denied" becomes an escalation
     flagged `ai_recommends_denial`: only a human denies on judgment.
-- **Failure handling:** API errors, refusals, truncation, a missing tool call,
-  or tool input that fails validation all → **escalated**
-  (`source: "ai_unavailable"`), logged. Non-API exceptions (bugs) are rethrown.
+- **Failure handling:** any failure of the Claude call (API error, network,
+  missing credentials), a refusal, truncation, a missing tool call, or tool
+  input that fails validation → **escalated** (`source: "ai_unavailable"`)
+  and logged. A request never fails because the AI is down. Errors in our own
+  request-building code are outside that guard and still surface.
 - **Tool:** `submit_refund_assessment` with `strict: true`. `confidence` is
   validated as 0–1 in code, because strict mode doesn't support numeric bounds.
   The tool is not forced via `tool_choice`: forced tool use is incompatible
@@ -40,17 +68,12 @@ Decisions and open questions to fold into the real docs. Newest first.
   Bedrock/Vertex/Foundry, so drop it there.
 - **Credentials:** the SDK reads `ANTHROPIC_API_KEY` (or an `ant auth login`
   profile). Tests inject a fake client and never call the API.
-- Seed-data routing today: 4 of 14 pending requests reach Claude; the rest are
-  settled by rules.
+- The seed data includes a prompt-injection attempt (Charlotte Lee, keyboard)
+  and a vague "not as described" claim (Olivia Martinez, lamp).
 
-## Backend language (open decision)
+## Backend language (resolved)
 
-- `/backend` currently holds **two runtimes**: FastAPI (Python) serves HTTP
-  (`/health` only so far); Prisma + TypeScript own the schema, seed, policy
-  engine and AI layer, sharing one SQLite file.
-- The TS policy engine / AI layer cannot be called from Python. Choose one:
-  (a) replace FastAPI with a TS server (Fastify/Express), or (b) keep FastAPI
-  and port the engine to Python (or call TS as a service).
+- Resolved in favour of TypeScript/Express (see API section). FastAPI removed.
 
 ## Refund policy numbers (chosen during scaffolding; confirm with the business)
 

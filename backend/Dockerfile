@@ -1,16 +1,17 @@
-FROM python:3.11-slim
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# Used by both the one-shot db-seed job and the API server (see docker-compose.yml).
+# Full (non-slim) image: Prisma's schema engine needs OpenSSL, which slim lacks.
+FROM node:22
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY package.json package-lock.json prisma.config.ts ./
+COPY prisma ./prisma
+RUN npm ci
 
-COPY . .
+COPY tsconfig.json ./
+COPY src ./src
+COPY data ./data
 
-RUN mkdir -p /app/db
-
+ENV PORT=8000
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["node", "--import", "tsx", "src/server.ts"]

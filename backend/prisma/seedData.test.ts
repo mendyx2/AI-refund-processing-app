@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { detectInjection, needsJudgment } from "../src/aiLayer";
 import { evaluateRefundRequest } from "../src/policyEngine";
 import { customers } from "./seedData";
 
@@ -34,6 +35,16 @@ describe("seed scenarios", () => {
     expect(orders.some((o) => o.finalSale)).toBe(true);
     expect(orders.some((o) => o.total > 500)).toBe(true);
     expect(orders.some((o) => o.status === "REFUNDED")).toBe(true);
+  });
+
+  it("includes a prompt-injection attempt and a vague judgment-call claim", () => {
+    expect(cases.some((c) => detectInjection(c.refund.description).length > 0)).toBe(true);
+    expect(
+      cases.some(
+        (c) => c.refund.reason === "NOT_AS_DESCRIBED" && detectInjection(c.refund.description).length === 0,
+      ),
+    ).toBe(true);
+    expect(cases.filter((c) => needsJudgment(c.refund)).length).toBeGreaterThan(0);
   });
 
   it.each(cases)("$customer: $order.product → $refund.expected", ({ order, refund, history }) => {

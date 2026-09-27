@@ -1,8 +1,7 @@
 services:
   db-seed:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.seed
+    build: ./backend
+    command: ["npm", "run", "db:reset"]
     environment:
       DATABASE_URL: file:/app/db/app.db
     volumes:
@@ -14,15 +13,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: sqlite:////app/db/app.db
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      DATABASE_URL: file:/app/db/app.db
+      CORS_ORIGINS: http://localhost:3000
+      # Optional: without it, judgment-call requests are escalated to a human.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - sqlite-data:/app/db
     depends_on:
       db-seed:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 5
