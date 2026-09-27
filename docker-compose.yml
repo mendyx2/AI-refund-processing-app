@@ -1,0 +1,64 @@
+# From a clean checkout:
+#   cp .env.example .env      # optional: add ANTHROPIC_API_KEY
+#   docker compose up --build
+# Startup order: db-seed (one-shot) -> backend (healthy) -> frontend.
+# Customer chat: http://localhost:3000/support   Admin: http://localhost:3000/admin
+
+name: refund-app
+
+services:
+  db-seed:
+    build: ./backend
+    # Creates the schema and seeds only if the database is empty, so restarts
+    # keep submitted requests. Start over: docker compose down -v
+    command: ["npm", "run", "db:setup"]
+    environment:
+      DATABASE_URL: file:/app/db/app.db
+    volumes:
+      - sqlite-data:/app/db
+    restart: "no"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: file:/app/db/app.db
+      CORS_ORIGINS: http://localhost:3000
+      # From .env or the shell. Optional: without it, requests that need
+      # Claude's judgment are escalated to a human instead.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - sqlite-data:/app/db
+    depends_on:
+      db-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8000/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the browser bundle; must be reachable from the user's browser.
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  sqlite-data:

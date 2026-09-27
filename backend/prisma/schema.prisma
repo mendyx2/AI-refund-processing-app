@@ -1,0 +1,90 @@
+// Canonical data model. Prisma owns the schema and seed; the FastAPI service
+// reads the same SQLite file.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum OrderStatus {
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  REFUNDED
+  CANCELLED
+}
+
+enum RefundReason {
+  DEFECTIVE
+  DAMAGED_IN_TRANSIT
+  WRONG_ITEM
+  NOT_AS_DESCRIBED
+  LATE_DELIVERY
+  CHANGED_MIND
+  NO_LONGER_NEEDED
+  OTHER
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  DENIED
+  ESCALATED
+}
+
+model Customer {
+  id             Int             @id @default(autoincrement())
+  name           String
+  email          String          @unique
+  createdAt      DateTime        @default(now())
+  orders         Order[]
+  refundRequests RefundRequest[]
+}
+
+model Order {
+  id             Int             @id @default(autoincrement())
+  orderNumber    String          @unique
+  customerId     Int
+  customer       Customer        @relation(fields: [customerId], references: [id])
+  productName    String
+  category       String
+  totalCents     Int
+  isFinalSale    Boolean         @default(false)
+  status         OrderStatus
+  orderedAt      DateTime
+  deliveredAt    DateTime?
+  refundRequests RefundRequest[]
+
+  @@index([customerId])
+}
+
+model RefundRequest {
+  id                Int          @id @default(autoincrement())
+  orderId           Int
+  order             Order        @relation(fields: [orderId], references: [id])
+  customerId        Int
+  customer          Customer     @relation(fields: [customerId], references: [id])
+  reason            RefundReason
+  description       String?
+  amountCents       Int
+  status            RefundStatus @default(PENDING)
+  requestedAt       DateTime     @default(now())
+  resolvedAt        DateTime?
+  decisionNotes     String?
+  /// Plain-language explanation shown to the customer (no internal signals)
+  customerMessage   String?
+  /// Which stage decided: policy_engine | injection_guard | ai_assisted | ai_unavailable
+  decisionSource    String?
+  injectionDetected Boolean      @default(false)
+  /// string[] of review flags (injection labels, AI flags, failure codes)
+  flags             Json?
+  /// Ordered decision trace; see src/services/refundService.ts
+  reasoningLog      Json?
+
+  @@index([customerId, requestedAt])
+  @@index([orderId])
+}
