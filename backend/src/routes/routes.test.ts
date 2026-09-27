@@ -101,6 +101,7 @@ describe("POST /refund-requests", () => {
       "final",
     ]);
     expect(res.body.reasoningLog[2]).toMatchObject({ consulted: false });
+    expect(res.body.customerMessage).toMatch(/^Good news: your refund of \$80\.00 for the Desk Lamp/);
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -151,6 +152,8 @@ describe("POST /refund-requests", () => {
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "injection_guard", injectionDetected: true });
     expect(res.body.flags).toContain("injection:ignore_instructions");
     expect(res.body.reasoningLog[1]).toEqual({ stage: "injection_scan", detected: true, labels: ["ignore_instructions"] });
+    expect(res.body.customerMessage).toMatch(/member of our support team/);
+    expect(res.body.customerMessage).not.toMatch(/injection/i);
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -273,6 +276,17 @@ describe("GET /refund-requests/:id", () => {
     expect((await request(app).get("/refund-requests/99999")).status).toBe(404);
     expect((await request(app).get("/refund-requests/1.5")).status).toBe(400);
     expect((await request(app).get("/refund-requests/abc")).status).toBe(400);
+  });
+});
+
+describe("GET /customers", () => {
+  it("lists customers by name for the support page's login dropdown", async () => {
+    const res = await request(app).get("/customers");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { id: alice.id, name: "Alice", email: "alice@example.com" },
+      { id: bob.id, name: "Bob", email: "bob@example.com" },
+    ]);
   });
 });
 

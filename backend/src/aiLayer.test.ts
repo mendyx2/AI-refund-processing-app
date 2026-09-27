@@ -80,9 +80,9 @@ function setup(respond: () => Promise<Anthropic.Beta.BetaMessage>) {
   return { layer, create, warn };
 }
 
-const approveEval: PolicyEvaluation = { decision: "APPROVE", reasons: ["Meets all refund policy criteria"] };
-const denyEval: PolicyEvaluation = { decision: "DENY", reasons: ["Outside the 30-day refund window"] };
-const escalateEval: PolicyEvaluation = { decision: "ESCALATE", reasons: ["Refund amount exceeds $500.00"] };
+const approveEval: PolicyEvaluation = { decision: "APPROVE", rule: "ELIGIBLE", reasons: ["Meets all refund policy criteria"] };
+const denyEval: PolicyEvaluation = { decision: "DENY", rule: "OUTSIDE_WINDOW", reasons: ["Outside the 30-day refund window"] };
+const escalateEval: PolicyEvaluation = { decision: "ESCALATE", rule: "HUMAN_REVIEW", reasons: ["Refund amount exceeds $500.00"] };
 
 describe("detectInjection", () => {
   it.each([

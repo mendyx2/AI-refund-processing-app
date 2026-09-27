@@ -132,7 +132,18 @@ describe("evaluateRefundRequest", () => {
     evaluateRefundRequest({ order: order(o), request: request(r), customerRequests: history, now: NOW });
 
   it("approves an ordinary in-window request", () => {
-    expect(evaluate().decision).toBe("APPROVE");
+    expect(evaluate()).toMatchObject({ decision: "APPROVE", rule: "ELIGIBLE" });
+  });
+
+  it.each([
+    ["ALREADY_REFUNDED", { status: "REFUNDED" }, {}],
+    ["ORDER_CANCELLED", { status: "CANCELLED" }, {}],
+    ["AMOUNT_EXCEEDS_TOTAL", { totalCents: 10_00 }, { amountCents: 20_00 }],
+    ["OUTSIDE_WINDOW", { deliveredAt: daysAgo(45) }, {}],
+    ["FINAL_SALE", { isFinalSale: true }, {}],
+    ["HUMAN_REVIEW", { totalCents: 900_00 }, { amountCents: 900_00 }],
+  ] as const)("reports the deciding rule %s", (rule, o, r) => {
+    expect(evaluate(o as Partial<PolicyOrder>, r as Partial<PolicyRefundRequest>).rule).toBe(rule);
   });
 
   it("denies an already-refunded order", () => {

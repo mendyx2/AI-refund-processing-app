@@ -2,6 +2,34 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Customer support page (`frontend/app/support`)
+
+- **"Login" is a dropdown** fed by `GET /customers`. There's no auth, and the
+  API trusts the `customerId` it is sent. Real auth must replace this before
+  any real use, and so must the open admin endpoints.
+- **The customer sees `customerMessage`, never internal notes.** It's written
+  by `backend/src/services/customerMessage.ts` from the deciding policy rule
+  (`PolicyEvaluation.rule`) and stored on the request. Escalations all get one
+  neutral "a member of our team will review it" message, whether the cause was
+  a >$500 amount, a suspicious pattern, an injection attempt, or the AI being
+  unavailable, so nothing tips off someone probing the system. Claude's
+  reasoning is written for staff and is not shown to customers.
+- **Known gap:** `POST /refund-requests` still returns the full record
+  (reasoning log, flags) to the browser; the UI just doesn't show it. Add a
+  customer-safe response shape (or split customer and admin APIs) when auth
+  lands.
+- **Reason picker:** the customer picks a reason (default "Something else" →
+  `OTHER`), because the reason decides the hard-rule window. A denial for an
+  in-window seller-fault case suggests choosing that reason instead.
+- **Orders with an open request are disabled** in the list, mirroring the
+  API's 409.
+- **API errors are mapped to friendly text** in `frontend/lib/api.ts`
+  (network, timeout, 404, 409, 5xx). The submit call has a 120 s timeout
+  because it may wait on Claude.
+- **`NEXT_PUBLIC_API_URL` is build-time.** It's inlined into the browser
+  bundle, so Docker passes it as a build arg, and it must be the URL the
+  *browser* can reach.
+
 ## API (`backend/src/routes`, `backend/src/services/refundService.ts`)
 
 - **Express replaced FastAPI.** Once the API moved to Express, the Python app
@@ -90,4 +118,6 @@ Decisions and open questions to fold into the real docs. Newest first.
 - `db-seed` uses the full `node:22` image, not `node:22-slim`: Prisma's schema
   engine needs OpenSSL, which slim lacks.
 - The seed job resets the database on every `docker compose up` (drop +
-  recreate). This must change once the app writes real data.
+  recreate). Because `backend` depends on `db-seed`, even
+  `docker compose start backend` / `restart backend` re-runs the seed and wipes
+  submitted requests. This must change once the app writes real data.

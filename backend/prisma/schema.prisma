@@ -75,6 +75,8 @@ model RefundRequest {
   requestedAt       DateTime     @default(now())
   resolvedAt        DateTime?
   decisionNotes     String?
+  /// Plain-language explanation shown to the customer (no internal signals)
+  customerMessage   String?
   /// Which stage decided: policy_engine | injection_guard | ai_assisted | ai_unavailable
   decisionSource    String?
   injectionDetected Boolean      @default(false)

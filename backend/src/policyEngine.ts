@@ -48,8 +48,19 @@ export interface TimestampedRequest {
 
 export type Decision = "APPROVE" | "DENY" | "ESCALATE";
 
+/** Which rule decided (§6 order), so callers can explain it without parsing reasons. */
+export type PolicyRule =
+  | "ALREADY_REFUNDED"
+  | "ORDER_CANCELLED"
+  | "AMOUNT_EXCEEDS_TOTAL"
+  | "OUTSIDE_WINDOW"
+  | "FINAL_SALE"
+  | "HUMAN_REVIEW"
+  | "ELIGIBLE";
+
 export interface PolicyEvaluation {
   decision: Decision;
+  rule: PolicyRule;
   reasons: string[];
 }
 
@@ -144,27 +155,28 @@ export function evaluateRefundRequest(input: {
   const { order, request, customerRequests, now } = input;
 
   if (order.status === "REFUNDED") {
-    return { decision: "DENY", reasons: ["Order has already been refunded"] };
+    return { decision: "DENY", rule: "ALREADY_REFUNDED", reasons: ["Order has already been refunded"] };
   }
   if (order.status === "CANCELLED") {
-    return { decision: "DENY", reasons: ["Order was cancelled and never charged"] };
+    return { decision: "DENY", rule: "ORDER_CANCELLED", reasons: ["Order was cancelled and never charged"] };
   }
   if (request.amountCents > order.totalCents) {
-    return { decision: "DENY", reasons: ["Refund amount exceeds order total"] };
+    return { decision: "DENY", rule: "AMOUNT_EXCEEDS_TOTAL", reasons: ["Refund amount exceeds order total"] };
   }
   if (!isWithinRefundWindow(order, request.reason, now)) {
     const days = Math.floor(daysSinceWindowStart(order, now));
     return {
       decision: "DENY",
+      rule: "OUTSIDE_WINDOW",
       reasons: [`Outside the ${refundWindowDays(request.reason)}-day refund window (${days} days)`],
     };
   }
   if (isFinalSale(order) && !isSellerFault(request.reason)) {
-    return { decision: "DENY", reasons: ["Final-sale items are not refundable for this reason"] };
+    return { decision: "DENY", rule: "FINAL_SALE", reasons: ["Final-sale items are not refundable for this reason"] };
   }
 
   const review = humanReviewReasons(order, request, customerRequests);
-  if (review.length > 0) return { decision: "ESCALATE", reasons: review };
+  if (review.length > 0) return { decision: "ESCALATE", rule: "HUMAN_REVIEW", reasons: review };
 
-  return { decision: "APPROVE", reasons: ["Meets all refund policy criteria"] };
+  return { decision: "APPROVE", rule: "ELIGIBLE", reasons: ["Meets all refund policy criteria"] };
 }

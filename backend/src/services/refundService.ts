@@ -7,6 +7,7 @@ import type { Db } from "../db";
 import { conflict, notFound } from "../errors";
 import { Prisma } from "../generated/prisma/client";
 import type { RefundReason, RefundStatus } from "../generated/prisma/enums";
+import { customerMessage } from "./customerMessage";
 
 /** The part of the AI layer the service depends on (injectable for tests). */
 export interface RefundAssessor {
@@ -33,7 +34,7 @@ export interface SubmitRefundInput {
 // ---------------------------------------------------------------------------
 
 export type ReasoningStep =
-  | { stage: "policy_engine"; decision: string; reasons: string[] }
+  | { stage: "policy_engine"; decision: string; rule: string; reasons: string[] }
   | { stage: "injection_scan"; detected: boolean; labels: string[] }
   | {
       stage: "ai";
@@ -63,7 +64,7 @@ export function injectionLabels(flags: readonly string[]): string[] {
 export function buildReasoningLog(result: AssessmentResult, model = MODEL): ReasoningStep[] {
   const labels = injectionLabels(result.flags);
   const steps: ReasoningStep[] = [
-    { stage: "policy_engine", decision: result.policy.decision, reasons: result.policy.reasons },
+    { stage: "policy_engine", decision: result.policy.decision, rule: result.policy.rule, reasons: result.policy.reasons },
     { stage: "injection_scan", detected: labels.length > 0, labels },
   ];
 
@@ -157,6 +158,10 @@ export async function listRefundRequests(prisma: Db, filter: { status?: RefundSt
   });
 }
 
+export async function listCustomers(prisma: Db) {
+  return prisma.customer.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, email: true } });
+}
+
 export async function getCustomerOrders(prisma: Db, customerId: number) {
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
@@ -234,6 +239,13 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
         status: STATUS[result.decision],
         resolvedAt: result.decision === "escalated" ? null : now,
         decisionNotes: decisionSummary(result),
+        customerMessage: customerMessage({
+          decision: result.decision,
+          rule: result.policy.rule,
+          order,
+          request,
+          now,
+        }),
         decisionSource: result.source,
         injectionDetected: injectionLabels(result.flags).length > 0,
         flags: result.flags,

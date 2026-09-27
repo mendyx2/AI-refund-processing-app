@@ -5,6 +5,8 @@ AI-enabled customer support application that helps process, approve, deny, or es
 
 ```
 frontend/          Next.js 14 (App Router, TypeScript, Tailwind)
+  app/support/     Customer refund chat (/support)
+  lib/api.ts       Typed client for the Express API
 backend/           Express 5 + Prisma 7 (SQLite) + zod, TypeScript
   prisma/          schema.prisma (canonical data model), seed.ts, seedData.ts
   src/
@@ -30,7 +32,7 @@ Services:
 |------------|------|-------|
 | `db-seed`  | —    | One-shot job: applies the Prisma schema to SQLite on the shared `sqlite-data` volume and runs `prisma/seed.ts`, then exits. |
 | `backend`  | 8000 | Express API. Starts only after `db-seed` completes successfully. `GET /health` → `{"status":"ok","database":"ok"}` |
-| `frontend` | 3000 | Starts once the backend healthcheck passes. Placeholder "Hello" page. |
+| `frontend` | 3000 | Starts once the backend healthcheck passes. Customer refund chat at http://localhost:3000/support. |
 
 The seed job re-runs (drop + recreate) on every `docker compose up`. Use `docker compose down -v` to also remove the volume.
 
@@ -52,9 +54,10 @@ npm run typecheck
 
 | Method & path | Purpose |
 |---|---|
-| `POST /refund-requests` | Submit `{ customerId, orderId, message, reason?, amountCents? }`. Runs the policy engine, then the AI layer for judgment calls, and saves the decision with its reasoning trace and injection flags. Returns the saved request (201). `reason` defaults to `OTHER`; `amountCents` defaults to the order total. |
+| `POST /refund-requests` | Submit `{ customerId, orderId, message, reason?, amountCents? }`. Runs the policy engine, then the AI layer for judgment calls, and saves the decision with its reasoning trace, injection flags, and a plain-language `customerMessage`. Returns the saved request (201). `reason` defaults to `OTHER`; `amountCents` defaults to the order total. |
 | `GET /refund-requests` | All requests, newest first (admin dashboard). Optional `?status=PENDING\|APPROVED\|DENIED\|ESCALATED`. |
 | `GET /refund-requests/:id` | Full detail, including `reasoningLog`. |
+| `GET /customers` | Customers by name (the support page's "sign in as" dropdown; no real auth yet). |
 | `GET /customers/:id/orders` | A customer's orders, newest first, with their refund requests (chat UI order lookup). |
 | `GET /health` | Liveness and database check. |
 
@@ -80,3 +83,18 @@ hard rule always wins. Customer text is wrapped in delimiters and treated as
 untrusted, and likely prompt-injection attempts are escalated to a human. Set
 `ANTHROPIC_API_KEY` to use it. The tests use a fake client. See
 `docs/NOTES.md` for the full decision flow.
+
+## Frontend
+
+`/support` is the customer chat. Pick a seeded customer (no passwords), choose
+an order and a reason, and describe the problem. The reply bubble shows the
+decision (Approved / Not eligible / Under review) and the backend's
+`customerMessage`. The browser calls the API at `NEXT_PUBLIC_API_URL`
+(default `http://localhost:8000`). It is baked in at build time, so in Docker
+it's a build arg in `docker-compose.yml`.
+
+```bash
+cd frontend
+npm install
+npm run dev          # http://localhost:3000/support (needs the backend running)
+```
