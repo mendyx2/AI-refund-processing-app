@@ -8,8 +8,9 @@ frontend/          Next.js 14 (App Router, TypeScript, Tailwind)
 backend/           FastAPI + SQLAlchemy 2 + Pydantic v2, plus Prisma (TypeScript)
   app/             FastAPI code (main.py, db.py, schemas.py)
   prisma/          schema.prisma (canonical data model), seed.ts, seedData.ts
-  src/             policyEngine.ts: the refund policy as pure functions (+ tests)
+  src/             policyEngine.ts (refund rules as pure functions), aiLayer.ts (Claude judgment layer)
   data/            refund_policy.md: the canonical refund policy
+docs/NOTES.md      Design decisions and open questions
 docker-compose.yml
 ```
 
@@ -48,3 +49,13 @@ npm run typecheck
 which applies them in policy order). The seed data covers every decision
 branch, and `prisma/seedData.test.ts` checks each seeded pending request
 against its expected outcome.
+
+### AI layer
+
+`src/aiLayer.ts` consults Claude (`claude-opus-5`, via `@anthropic-ai/sdk`) only
+for judgment calls the policy engine can't settle. Claude must answer through
+the `submit_refund_assessment` tool. Its output is only a recommendation, and a
+hard rule always wins. Customer text is wrapped in delimiters and treated as
+untrusted, and likely prompt-injection attempts are escalated to a human. Set
+`ANTHROPIC_API_KEY` to use it. The tests use a fake client. See
+`docs/NOTES.md` for the full decision flow.
