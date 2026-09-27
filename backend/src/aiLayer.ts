@@ -19,6 +19,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import {
   evaluateRefundRequest,
   isSellerFault,
+  isSuspiciousPattern,
   type Decision,
   type PolicyEvaluation,
   type PolicyOrder,
@@ -31,6 +32,8 @@ export const MODEL = "claude-opus-5";
 /** Below this confidence an AI "approved" recommendation is escalated instead. */
 export const MIN_APPROVAL_CONFIDENCE = 0.8;
 export const ASSESSMENT_TOOL_NAME = "submit_refund_assessment";
+/** Flag recorded when the customer's history matches policy §5. */
+export const SUSPICIOUS_PATTERN_FLAG = "suspicious_pattern";
 
 // ---------------------------------------------------------------------------
 // Tool schema
@@ -356,7 +359,11 @@ export class RefundAiLayer {
     const injection = detectInjection(
       [ctx.customer.name, ctx.customer.email, ctx.request.description ?? ""].join("\n"),
     );
-    const injectionFlags = injection.map((label) => `injection:${label}`);
+    // Review signals recorded on every outcome, so staff can filter on them.
+    const signals = [
+      ...injection.map((label) => `injection:${label}`),
+      ...(isSuspiciousPattern(ctx.customerRequests) ? [SUSPICIOUS_PATTERN_FLAG] : []),
+    ];
     const base = { policy, ai: null, conflict: null };
 
     // 1. Hard rules first. Engine DENY/ESCALATE are final.
@@ -366,19 +373,19 @@ export class RefundAiLayer {
         ...base,
         decision: FROM_ENGINE[policy.decision],
         source: "policy_engine",
-        flags: injectionFlags,
+        flags: signals,
       };
     }
 
     // 2. Injection attempt: escalate without consulting Claude.
     if (injection.length > 0) {
       this.logInjection(ctx, injection);
-      return { ...base, decision: "escalated", source: "injection_guard", flags: injectionFlags };
+      return { ...base, decision: "escalated", source: "injection_guard", flags: signals };
     }
 
     // 3. Clear-cut approval: no judgment needed.
     if (!needsJudgment(ctx.request)) {
-      return { ...base, decision: "approved", source: "policy_engine", flags: [] };
+      return { ...base, decision: "approved", source: "policy_engine", flags: signals };
     }
 
     // 4. Judgment call: consult Claude, then reconcile against the rules.
@@ -389,7 +396,7 @@ export class RefundAiLayer {
         error: outcome.error,
         detail: outcome.detail,
       });
-      return { ...base, decision: "escalated", source: "ai_unavailable", flags: [outcome.error] };
+      return { ...base, decision: "escalated", source: "ai_unavailable", flags: [...signals, outcome.error] };
     }
 
     const result = reconcile(policy, outcome.assessment);
@@ -406,7 +413,7 @@ export class RefundAiLayer {
       decision: result.decision,
       source: "ai_assisted",
       ai: outcome.assessment,
-      flags: result.flags,
+      flags: [...signals, ...result.flags],
       conflict: result.conflict,
     };
   }

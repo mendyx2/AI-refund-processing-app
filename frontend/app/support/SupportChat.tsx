@@ -12,6 +12,7 @@ import {
   type RefundReason,
   type RefundResult,
 } from "@/lib/api";
+import { date, money } from "@/lib/format";
 
 // ---------------------------------------------------------------------------
 // Display helpers
@@ -29,10 +30,6 @@ const REASONS: { value: RefundReason; label: string }[] = [
 ];
 const reasonLabel = (r: RefundReason) => REASONS.find((x) => x.value === r)?.label ?? r;
 
-const money = (cents: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
-const date = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
 const MAX_MESSAGE = 4000;
 

@@ -244,6 +244,15 @@ describe("RefundAiLayer.assessRefundRequest", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("flags a suspicious refund pattern alongside the engine's escalation", async () => {
+    const { layer, create } = setup(async () => toolUseMessage(assessment()));
+    const result = await layer.assessRefundRequest(
+      context({ history: [{ requestedAt: daysAgo(0) }, { requestedAt: daysAgo(4) }, { requestedAt: daysAgo(9) }] }),
+    );
+    expect(result).toMatchObject({ decision: "escalated", source: "policy_engine", flags: ["suspicious_pattern"] });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("keeps a hard DENY on an injection attempt, flagged", async () => {
     const { layer } = setup(async () => toolUseMessage(assessment()));
     const result = await layer.assessRefundRequest(

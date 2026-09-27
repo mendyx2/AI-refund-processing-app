@@ -6,6 +6,7 @@ AI-enabled customer support application that helps process, approve, deny, or es
 ```
 frontend/          Next.js 14 (App Router, TypeScript, Tailwind)
   app/support/     Customer refund chat (/support)
+  app/admin/       Admin dashboard (/admin)
   lib/api.ts       Typed client for the Express API
 backend/           Express 5 + Prisma 7 (SQLite) + zod, TypeScript
   prisma/          schema.prisma (canonical data model), seed.ts, seedData.ts
@@ -32,7 +33,7 @@ Services:
 |------------|------|-------|
 | `db-seed`  | —    | One-shot job: applies the Prisma schema to SQLite on the shared `sqlite-data` volume and runs `prisma/seed.ts`, then exits. |
 | `backend`  | 8000 | Express API. Starts only after `db-seed` completes successfully. `GET /health` → `{"status":"ok","database":"ok"}` |
-| `frontend` | 3000 | Starts once the backend healthcheck passes. Customer refund chat at http://localhost:3000/support. |
+| `frontend` | 3000 | Starts once the backend healthcheck passes. Customer chat at http://localhost:3000/support, admin dashboard at http://localhost:3000/admin. |
 
 The seed job re-runs (drop + recreate) on every `docker compose up`. Use `docker compose down -v` to also remove the volume.
 
@@ -92,6 +93,11 @@ decision (Approved / Not eligible / Under review) and the backend's
 `customerMessage`. The browser calls the API at `NEXT_PUBLIC_API_URL`
 (default `http://localhost:8000`). It is baked in at build time, so in Docker
 it's a build arg in `docker-compose.yml`.
+
+`/admin` lists every refund request (customer, order, decision, time) with
+filter tabs by status and an "only injection / suspicion flags" toggle.
+Expanding a row loads its detail: the customer's message, Claude's confidence,
+all flags, what the customer was told, and the step-by-step reasoning trace.
 
 ```bash
 cd frontend

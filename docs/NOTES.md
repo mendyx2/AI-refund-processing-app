@@ -2,6 +2,25 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Admin dashboard (`frontend/app/admin`)
+
+- **No auth.** `/admin` and the `GET /refund-requests*` endpoints are open.
+  Put them behind staff auth before any real use.
+- **Loads the whole list once and filters client-side,** so the tabs can show
+  counts. Fine at demo scale; add server-side pagination and filtering
+  (the API already accepts `?status=`) when volume grows.
+- **Details load on expand** (`GET /refund-requests/:id`) and are cached until
+  Refresh.
+- **`suspicious_pattern` is a structured flag.** The AI layer records it
+  whenever the customer's history matches policy §5, next to the
+  `injection:*` labels. Previously it existed only as prose in the policy
+  reasons. The "only injection / suspicion flags" toggle filters on these two
+  kinds.
+- **Seeded requests have no trace.** They were inserted by the seed, not
+  processed, so they show as "Awaiting decision" (pending) or
+  "Historical record". Seeded pending requests are never processed
+  automatically; a "re-run decision" action would be a natural next step.
+
 ## Customer support page (`frontend/app/support`)
 
 - **"Login" is a dropdown** fed by `GET /customers`. There's no auth, and the

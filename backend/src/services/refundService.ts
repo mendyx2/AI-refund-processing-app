@@ -60,6 +60,9 @@ export function injectionLabels(flags: readonly string[]): string[] {
   return flags.filter((f) => f.startsWith(INJECTION_PREFIX)).map((f) => f.slice(INJECTION_PREFIX.length));
 }
 
+/** Failure codes the AI layer records when Claude could not be used (ai_api_error_500, ...). */
+const aiErrors = (flags: readonly string[]) => flags.filter((f) => f.startsWith("ai_")).join(", ");
+
 /** Turns an AssessmentResult into the ordered trace stored with the request. */
 export function buildReasoningLog(result: AssessmentResult, model = MODEL): ReasoningStep[] {
   const labels = injectionLabels(result.flags);
@@ -95,7 +98,7 @@ export function buildReasoningLog(result: AssessmentResult, model = MODEL): Reas
       });
       break;
     case "ai_unavailable":
-      steps.push({ stage: "ai", consulted: true, model, outcome: "unavailable", error: result.flags.join(", ") });
+      steps.push({ stage: "ai", consulted: true, model, outcome: "unavailable", error: aiErrors(result.flags) });
       break;
   }
 
@@ -111,7 +114,7 @@ export function decisionSummary(result: AssessmentResult): string {
     case "injection_guard":
       return `Escalated for human review: possible prompt injection (${injectionLabels(result.flags).join(", ")})`;
     case "ai_unavailable":
-      return `Escalated for human review: AI assessment unavailable (${result.flags.join(", ")})`;
+      return `Escalated for human review: AI assessment unavailable (${aiErrors(result.flags)})`;
     case "policy_engine":
       return result.policy.reasons.join("; ");
   }

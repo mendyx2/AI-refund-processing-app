@@ -176,6 +176,7 @@ describe("POST /refund-requests", () => {
 
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "policy_engine" });
     expect(res.body.decisionNotes).toMatch(/3\+ refund requests within 14 days/);
+    expect(res.body.flags).toEqual(["suspicious_pattern"]);
   });
 
   it("returns 409 when the order already has an open request", async () => {

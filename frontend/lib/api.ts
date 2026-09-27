@@ -47,6 +47,50 @@ export interface RefundResult {
   customerMessage: string | null;
 }
 
+/** One step of the stored decision trace (backend/src/services/refundService.ts). */
+export type ReasoningStep =
+  | { stage: "policy_engine"; decision: "APPROVE" | "DENY" | "ESCALATE"; rule?: string; reasons: string[] }
+  | { stage: "injection_scan"; detected: boolean; labels: string[] }
+  | { stage: "ai"; consulted: false; skippedBecause: string }
+  | {
+      stage: "ai";
+      consulted: true;
+      model: string;
+      outcome: "assessment" | "unavailable";
+      recommendation?: "approved" | "denied" | "escalated";
+      confidence?: number;
+      reasoning?: string;
+      flags?: string[];
+      error?: string;
+    }
+  | { stage: "final"; decision: "approved" | "denied" | "escalated"; source: string; conflict: string | null };
+
+export type DecisionSource = "policy_engine" | "injection_guard" | "ai_assisted" | "ai_unavailable";
+
+/** Row of GET /refund-requests (admin dashboard). */
+export interface RefundListItem {
+  id: number;
+  status: RefundStatus;
+  reason: RefundReason;
+  amountCents: number;
+  requestedAt: string;
+  resolvedAt: string | null;
+  decisionSource: DecisionSource | null;
+  injectionDetected: boolean;
+  flags: string[] | null;
+  customer: Customer;
+  order: { id: number; orderNumber: string; productName: string; totalCents: number };
+}
+
+/** GET /refund-requests/:id */
+export interface RefundDetail extends Omit<RefundListItem, "order"> {
+  description: string | null;
+  decisionNotes: string | null;
+  customerMessage: string | null;
+  reasoningLog: ReasoningStep[] | null;
+  order: Omit<Order, "refundRequests">;
+}
+
 export interface NewRefundRequest {
   customerId: number;
   orderId: number;
@@ -109,6 +153,11 @@ export const api = {
 
   customerOrders: (customerId: number, signal?: AbortSignal) =>
     request<CustomerOrders>(`/customers/${customerId}/orders`, { signal }),
+
+  listRefundRequests: (signal?: AbortSignal) => request<RefundListItem[]>("/refund-requests", { signal }),
+
+  getRefundRequest: (id: number, signal?: AbortSignal) =>
+    request<RefundDetail>(`/refund-requests/${id}`, { signal }),
 
   /** May consult Claude, so it gets a longer timeout than the lookups. */
   submitRefundRequest: (body: NewRefundRequest) =>
