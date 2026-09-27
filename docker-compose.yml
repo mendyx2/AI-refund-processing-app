@@ -1,5 +1,5 @@
 # From a clean checkout:
-#   cp .env.example .env      # optional: add ANTHROPIC_API_KEY
+#   cp .env.example .env      # optional: add an AI API key (Anthropic, OpenAI, Gemini, ...)
 #   docker compose up --build
 # Startup order: db-seed (one-shot) -> backend (healthy) -> frontend.
 # Customer chat: http://localhost:3000/support   Admin: http://localhost:3000/admin
@@ -25,9 +25,20 @@ services:
     environment:
       DATABASE_URL: file:/app/db/app.db
       CORS_ORIGINS: http://localhost:3000
-      # From .env or the shell. Optional: without it, requests that need
-      # Claude's judgment are escalated to a human instead.
+      # AI provider (all optional; from .env or the shell; see .env.example).
+      # Any one key is enough: the provider is detected from it. Without a key,
+      # requests that need the model's judgment are escalated to a human.
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    # Lets AI_BASE_URL reach a model server on the host (e.g. Ollama at
+    # http://host.docker.internal:11434/v1), including on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - sqlite-data:/app/db
     depends_on:

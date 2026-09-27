@@ -15,6 +15,7 @@ import {
   type RefundAssessment,
   type RefundContext,
 } from "./aiLayer";
+import { UnconfiguredProvider } from "./ai/providers";
 import type { PolicyEvaluation } from "./policyEngine";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
@@ -272,6 +273,37 @@ describe("RefundAiLayer.assessRefundRequest", () => {
       source: "policy_engine",
       flags: ["ai_client_error"],
       aiStep: { consulted: true, mode: "assessment", error: "ai_client_error" },
+    });
+  });
+
+  it("records which provider and model were consulted", async () => {
+    const { layer } = setup(async () => toolUseMessage(assessment()));
+    const result = await layer.assessRefundRequest(context());
+    expect(result.aiStep).toEqual({
+      consulted: true,
+      mode: "assessment",
+      provider: "anthropic",
+      model: "claude-opus-5",
+      error: null,
+    });
+  });
+
+  describe("with no AI provider configured", () => {
+    const warn = vi.fn<AiLogger["warn"]>();
+    const layer = new RefundAiLayer({
+      provider: new UnconfiguredProvider("No AI API key configured"),
+      logger: { warn },
+      policyText: "P",
+    });
+
+    it("keeps clear-cut approvals and escalates claims that need judgment, without log noise", async () => {
+      const clearCut = await layer.assessRefundRequest(context({ request: { reason: "CHANGED_MIND" } }));
+      expect(clearCut).toMatchObject({ decision: "approved", source: "policy_engine", flags: ["ai_not_configured"] });
+
+      const judgment = await layer.assessRefundRequest(context({ request: { reason: "DEFECTIVE" } }));
+      expect(judgment).toMatchObject({ decision: "escalated", source: "ai_unavailable", flags: ["ai_not_configured"] });
+      expect(judgment.aiStep).toMatchObject({ provider: "none", error: "ai_not_configured" });
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 

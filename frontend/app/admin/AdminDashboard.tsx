@@ -9,6 +9,7 @@ import {
   type ReasoningStep,
   type RefundDetail,
   type RefundListItem,
+  type Health,
   type RefundStatus,
 } from "@/lib/api";
 import { dateTime, money } from "@/lib/format";
@@ -41,6 +42,21 @@ const SOURCE: Record<DecisionSource, string> = {
 
 const humanize = (s: string) => s.replace(/_/g, " ");
 
+const PROVIDER_LABEL: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  "openai-compatible": "OpenAI-compatible",
+  none: "not configured",
+};
+
+/** "AI (OpenAI · gpt-4.1)"; older traces without a provider show just the model. */
+const aiLabel = (step: { provider?: string; model: string }) => {
+  const provider = step.provider ? (PROVIDER_LABEL[step.provider] ?? step.provider) : null;
+  if (step.provider === "none") return "AI (not configured)";
+  return `AI (${[provider, step.model].filter(Boolean).join(" · ")})`;
+};
+
 function flagStyle(flag: string): { label: string; cls: string } {
   if (flag.startsWith("injection:")) {
     return { label: `injection: ${humanize(flag.slice("injection:".length))}`, cls: "bg-rose-100 text-rose-800" };
@@ -48,7 +64,7 @@ function flagStyle(flag: string): { label: string; cls: string } {
   if (flag === "suspicious_pattern") return { label: "suspicious pattern", cls: "bg-amber-100 text-amber-900" };
   if (flag === "conflicting_request") return { label: "conflicting request", cls: "bg-amber-100 text-amber-900" };
   if (flag.startsWith("ai_")) return { label: humanize(flag), cls: "bg-slate-100 text-slate-700" };
-  return { label: humanize(flag), cls: "bg-sky-100 text-sky-800" }; // flags raised by Claude
+  return { label: humanize(flag), cls: "bg-sky-100 text-sky-800" }; // flags raised by the AI model
 }
 
 /** Injection, suspicion, and conflict signals: the ones worth a reviewer's attention first. */
@@ -104,6 +120,16 @@ export default function AdminDashboard() {
   // Rows re-run since the last filter change stay visible even if their new
   // status no longer matches the filter, so the result doesn't vanish.
   const [pinned, setPinned] = useState<Set<number>>(new Set());
+  const [ai, setAi] = useState<Health["ai"] | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    api
+      .health(ctrl.signal)
+      .then((h) => setAi(h.ai ?? null))
+      .catch(() => {}); // informational only
+    return () => ctrl.abort();
+  }, []);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
@@ -181,6 +207,19 @@ export default function AdminDashboard() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Refund requests</h1>
           <p className="text-sm text-slate-600">Every request with its decision and how it was reached.</p>
+          {ai && (
+            <p className="mt-1 text-xs">
+              {ai.configured ? (
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
+                  AI advisor: {PROVIDER_LABEL[ai.provider] ?? ai.provider} · {ai.model}
+                </span>
+              ) : (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
+                  AI advisor not configured: requests that need judgment are escalated to a human
+                </span>
+              )}
+            </p>
+          )}
         </div>
         <button
           onClick={() => void load()}
@@ -479,7 +518,7 @@ function FlagChip({ flag }: { flag: string }) {
 
 function Confidence({ step }: { step: Extract<ReasoningStep, { stage: "ai" }> | undefined }) {
   if (!step) return <span className="text-slate-500">n/a</span>;
-  if (!step.consulted) return <span className="text-slate-500">n/a: Claude not consulted</span>;
+  if (!step.consulted) return <span className="text-slate-500">n/a: AI not consulted</span>;
   if (step.confidence === undefined) return <span className="text-slate-500">n/a: no assessment</span>;
 
   const pct = Math.round(step.confidence * 100);
@@ -566,7 +605,7 @@ function TraceStep({ step }: { step: ReasoningStep }) {
         return (
           <div>
             <StepTitle>
-              Claude: <span className="text-slate-600">not consulted</span>
+              AI: <span className="text-slate-600">not consulted</span>
             </StepTitle>
             <p className="mt-1 text-slate-600">{step.skippedBecause}</p>
           </div>
@@ -576,12 +615,13 @@ function TraceStep({ step }: { step: ReasoningStep }) {
         return (
           <div>
             <StepTitle>
-              Claude ({step.model}){step.mode === "consistency_check" ? " consistency check" : ""}:{" "}
+              {aiLabel(step)}
+              {step.mode === "consistency_check" ? " consistency check" : ""}:{" "}
               <b className="text-slate-700">unavailable</b>
             </StepTitle>
             <p className="mt-1 text-slate-600">
-              Check could not run ({step.error}). Clear-cut approvals and denials keep the rules&apos; decision; other
-              requests go to a human.
+              {step.error === "ai_not_configured" ? "No AI provider configured" : `Check could not run (${step.error})`}
+              . Clear-cut approvals and denials keep the rules&apos; decision; other requests go to a human.
             </p>
           </div>
         );
@@ -590,9 +630,9 @@ function TraceStep({ step }: { step: ReasoningStep }) {
         <div>
           <StepTitle>
             {step.mode === "consistency_check" ? (
-              <>Claude ({step.model}) consistency check of a reason-dependent denial: </>
+              <>{aiLabel(step)} consistency check of a reason-dependent denial: </>
             ) : (
-              <>Claude ({step.model}) </>
+              <>{aiLabel(step)} </>
             )}
             recommends <b>{step.recommendation}</b>
             {step.confidence !== undefined && (

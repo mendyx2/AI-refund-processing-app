@@ -56,6 +56,8 @@ export type ReasoningStep =
   | {
       stage: "ai";
       consulted: true;
+      /** anthropic | openai | gemini | openai-compatible | none. Absent on older traces. */
+      provider?: string;
       model: string;
       /** assessment: rule-approved request; consistency_check: reason-dependent denial. Absent on older traces. */
       mode?: "assessment" | "consistency_check";
@@ -151,7 +153,15 @@ async function request<T>(path: string, init: RequestInit & { timeoutMs?: number
   return (await res.json()) as T;
 }
 
+export interface Health {
+  status: string;
+  database: string;
+  ai?: { provider: string; model: string | null; configured: boolean };
+}
+
 export const api = {
+  health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
+
   listCustomers: (signal?: AbortSignal) => request<Customer[]>("/customers", { signal }),
 
   customerOrders: (customerId: number, signal?: AbortSignal) =>
@@ -161,11 +171,11 @@ export const api = {
 
   getRefundRequest: (id: number, signal?: AbortSignal) => request<RefundDetail>(`/refund-requests/${id}`, { signal }),
 
-  /** Staff action; may consult Claude. */
+  /** Staff action; may consult the AI model. */
   rerunRefundRequest: (id: number) =>
     request<RefundDetail>(`/refund-requests/${id}/rerun`, { method: "POST", timeoutMs: 120_000 }),
 
-  /** May consult Claude, so it gets a longer timeout than the lookups. */
+  /** May consult the AI model, so it gets a longer timeout than the lookups. */
   submitRefundRequest: (body: NewRefundRequest) =>
     request<RefundResult>("/refund-requests", {
       method: "POST",

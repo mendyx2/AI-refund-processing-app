@@ -2,7 +2,7 @@
  * Refund-request workflow: load the facts, run the policy engine + AI layer,
  * and persist the decision with its full reasoning trace.
  */
-import { MODEL, type AiMode, type AssessmentResult, type FinalDecision, type RefundContext } from "../aiLayer";
+import type { AiMode, AssessmentResult, FinalDecision, RefundContext } from "../aiLayer";
 import type { Db } from "../db";
 import { conflict, notFound } from "../errors";
 import { Prisma } from "../generated/prisma/client";
@@ -52,6 +52,8 @@ export type ReasoningStep =
   | {
       stage: "ai";
       consulted: true;
+      /** anthropic | openai | gemini | openai-compatible | none */
+      provider: string;
       model: string;
       /** assessment: rule-approved request; consistency_check: reason-dependent denial. */
       mode: AiMode;
@@ -71,7 +73,7 @@ export function injectionLabels(flags: readonly string[]): string[] {
 }
 
 /** Turns an AssessmentResult into the ordered trace stored with the request. */
-export function buildReasoningLog(result: AssessmentResult, model = MODEL): ReasoningStep[] {
+export function buildReasoningLog(result: AssessmentResult): ReasoningStep[] {
   const labels = injectionLabels(result.flags);
   const steps: ReasoningStep[] = [
     { stage: "policy_engine", decision: result.policy.decision, rule: result.policy.rule, reasons: result.policy.reasons },
@@ -82,12 +84,21 @@ export function buildReasoningLog(result: AssessmentResult, model = MODEL): Reas
   if (!ai.consulted) {
     steps.push({ stage: "ai", consulted: false, skippedBecause: ai.skippedBecause });
   } else if (ai.error) {
-    steps.push({ stage: "ai", consulted: true, model, mode: ai.mode, outcome: "unavailable", error: ai.error });
+    steps.push({
+      stage: "ai",
+      consulted: true,
+      provider: ai.provider,
+      model: ai.model,
+      mode: ai.mode,
+      outcome: "unavailable",
+      error: ai.error,
+    });
   } else {
     steps.push({
       stage: "ai",
       consulted: true,
-      model,
+      provider: ai.provider,
+      model: ai.model,
       mode: ai.mode,
       outcome: "assessment",
       recommendation: result.ai?.recommendedDecision,

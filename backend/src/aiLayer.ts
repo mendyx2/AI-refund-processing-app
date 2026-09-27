@@ -1,5 +1,5 @@
 /**
- * AI layer: consults Claude on refund requests that need judgment, without ever
+ * AI layer: consults an LLM (Claude, GPT, Gemini, ...) on refund requests that need judgment, without ever
  * letting it finalize a decision.
  *
  * Pipeline (see assessRefundRequest):
@@ -7,19 +7,19 @@
  *      is final, except that a denial which depends only on the reason code the
  *      customer picked gets a consistency check (step 3) and may be escalated.
  *   2. Customer-provided text is scanned for prompt-injection phrases. A hit
- *      escalates to a human; Claude is not called.
- *   3. Claude must call `submit_refund_assessment`. For rule-approved requests
+ *      escalates to a human; the model is not called.
+ *   3. The model must call `submit_refund_assessment`. For rule-approved requests
  *      it assesses the claim and checks it for conflicts with the reason code
  *      and order record; for reason-dependent denials it only checks for such
  *      conflicts. Its output is a recommendation that code reconciles against
- *      the rules: Claude can confirm an approval or send a request to a human,
+ *      the rules: the model can confirm an approval or send a request to a human,
  *      never approve what the rules deny and never deny on its own. Any
  *      disagreement with a rule is logged.
  */
 import { readFileSync } from "node:fs";
 
-import Anthropic from "@anthropic-ai/sdk";
-
+import { createProvider, resolveAiConfig } from "./ai/config";
+import { AnthropicProvider, type AssessmentProvider, type MessagesClient, type ToolSpec } from "./ai/providers";
 import {
   evaluateRefundRequest,
   isSellerFault,
@@ -33,13 +33,13 @@ import {
   type TimestampedRequest,
 } from "./policyEngine";
 
-export const MODEL = "claude-opus-5";
+export type { MessagesClient } from "./ai/providers";
 /** Below this confidence an AI "approved" recommendation is escalated instead. */
 export const MIN_APPROVAL_CONFIDENCE = 0.8;
 export const ASSESSMENT_TOOL_NAME = "submit_refund_assessment";
 /** Flag recorded when the customer's history matches policy §5. */
 export const SUSPICIOUS_PATTERN_FLAG = "suspicious_pattern";
-/** Flag Claude raises when the description contradicts the reason code or order record (policy §5). */
+/** Flag the model raises when the description contradicts the reason code or order record (policy §5). */
 export const CONFLICTING_REQUEST_FLAG = "conflicting_request";
 
 // ---------------------------------------------------------------------------
@@ -56,14 +56,14 @@ export interface RefundAssessment {
   flags: string[];
 }
 
-export const ASSESSMENT_TOOL: Anthropic.Beta.BetaTool = {
+/** Provider-neutral tool definition; each provider adapter maps it to its API's format. */
+export const ASSESSMENT_TOOL: ToolSpec = {
   name: ASSESSMENT_TOOL_NAME,
   description:
     "Submit your assessment of the refund request. This is the only way to respond; " +
     "call it exactly once. Your assessment is a recommendation that a policy engine " +
     "and, where needed, a human agent will act on.",
-  strict: true,
-  input_schema: {
+  parameters: {
     type: "object",
     properties: {
       reasoning: {
@@ -301,24 +301,24 @@ const FROM_ENGINE: Record<Decision, FinalDecision> = {
 
 export interface Reconciliation {
   decision: FinalDecision;
-  /** Set when Claude's recommendation disagreed with a hard rule. */
+  /** Set when the model's recommendation disagreed with a hard rule. */
   conflict: string | null;
   flags: string[];
 }
 
-/** Whether Claude signalled that the request conflicts with its reason code or order record. */
+/** Whether the model signalled that the request conflicts with its reason code or order record. */
 const signalsConflict = (ai: RefundAssessment) =>
   ai.flags.includes(CONFLICTING_REQUEST_FLAG) || ai.recommendedDecision === "escalated";
 
 /**
- * Combines the engine's result with Claude's recommendation. Claude never
+ * Combines the engine's result with the model's recommendation. The model never
  * finalizes, and can only move a request toward human review:
  * - Engine ESCALATE stands.
  * - Engine DENY stands, except a reason-dependent denial (`reasonSensitive`)
- *   that Claude marks as conflicting is escalated. Claude can never turn a
+ *   that the model marks as conflicting is escalated. The model can never turn a
  *   denial into an approval; if it recommends one, the rule wins and the
  *   disagreement is reported.
- * - Where the rules permit approval, Claude can confirm it (with enough
+ * - Where the rules permit approval, the model can confirm it (with enough
  *   confidence and no conflict) or send it to a human. An AI "denied" becomes
  *   an escalation, since only a human may deny on judgment.
  */
@@ -358,8 +358,8 @@ const JUDGMENT_REASONS: ReadonlySet<RefundReason> = new Set(["NOT_AS_DESCRIBED",
 
 /**
  * Whether an engine-approved request rests on the customer's account of what
- * happened (seller-fault and subjective reasons). Claude reviews every
- * rule-approved request, but only these must be escalated when Claude is
+ * happened (seller-fault and subjective reasons). The model reviews every
+ * rule-approved request, but only these must be escalated when the model is
  * unavailable. Buyer-side reasons (change of mind, late delivery, ...) are
  * clear-cut, so the rules' approval stands without the AI check.
  */
@@ -372,13 +372,13 @@ export type DecisionSource = "policy_engine" | "injection_guard" | "ai_assisted"
 /** What happened at the AI step, for the reasoning trace. */
 export type AiStep =
   | { consulted: false; skippedBecause: string }
-  | { consulted: true; mode: AiMode; error: string | null };
+  | { consulted: true; mode: AiMode; provider: string; model: string; error: string | null };
 
 export interface AssessmentResult {
   decision: FinalDecision;
   source: DecisionSource;
   policy: PolicyEvaluation;
-  /** Claude's raw recommendation, when it was consulted and answered validly. */
+  /** The model's raw recommendation, when it was consulted and answered validly. */
   ai: RefundAssessment | null;
   aiStep: AiStep;
   flags: string[];
@@ -393,30 +393,26 @@ const consoleLogger: AiLogger = {
   warn: (event, details) => console.warn(JSON.stringify({ level: "warn", event, ...details })),
 };
 
-/** The one SDK call this module makes; injectable so tests can fake it. */
-export interface MessagesClient {
-  beta: {
-    messages: {
-      create(
-        params: Anthropic.Beta.MessageCreateParamsNonStreaming,
-      ): PromiseLike<Anthropic.Beta.BetaMessage>;
-    };
-  };
-}
-
 export interface AiLayerOptions {
+  /** The LLM to consult. Defaults to the provider configured by environment variables (see ai/config.ts). */
+  provider?: AssessmentProvider;
+  /** Shortcut for tests: an Anthropic client, used with the default Claude model. */
   client?: MessagesClient;
   logger?: AiLogger;
   policyText?: string;
 }
 
 export class RefundAiLayer {
-  private readonly client: MessagesClient;
+  readonly provider: AssessmentProvider;
   private readonly logger: AiLogger;
   private readonly systemPrompt: string;
 
   constructor(options: AiLayerOptions = {}) {
-    this.client = options.client ?? new Anthropic();
+    this.provider =
+      options.provider ??
+      (options.client
+        ? new AnthropicProvider(options.client, "claude-opus-5")
+        : createProvider(resolveAiConfig(process.env)));
     this.logger = options.logger ?? consoleLogger;
     this.systemPrompt = buildSystemPrompt(options.policyText ?? loadPolicyText());
   }
@@ -467,7 +463,7 @@ export class RefundAiLayer {
       };
     }
 
-    // 2. Injection attempt on a rule-approved request: escalate without consulting Claude.
+    // 2. Injection attempt on a rule-approved request: escalate without consulting the model.
     if (injection.length > 0) {
       this.logInjection(ctx, injection);
       return {
@@ -479,18 +475,18 @@ export class RefundAiLayer {
       };
     }
 
-    // 3. Consult Claude: full assessment of rule-approved requests, or a
+    // 3. Consult the model: full assessment of rule-approved requests, or a
     // consistency check of a reason-dependent denial.
     const mode: AiMode = reasonSensitive ? "consistency_check" : "assessment";
-    const outcome = await this.consultClaude(ctx, policy, mode);
+    const outcome = await this.consultModel(ctx, policy, mode);
     if ("error" in outcome) {
-      this.logger.warn("ai_unavailable", {
+      if (outcome.error !== "ai_not_configured") this.logger.warn("ai_unavailable", {
         orderNumber: ctx.order.orderNumber,
         mode,
         error: outcome.error,
         detail: outcome.detail,
       });
-      const aiStep: AiStep = { consulted: true, mode, error: outcome.error };
+      const aiStep: AiStep = { ...this.consulted(mode), error: outcome.error };
       const flags = [...signals, outcome.error];
       // Without the check, the rules' decision stands where it is safe to:
       // denials, and clear-cut approvals. Claims that rest on the customer's
@@ -514,57 +510,32 @@ export class RefundAiLayer {
     return {
       ...base,
       decision: result.decision,
-      // A denial that Claude merely agreed with was decided by the rules.
+      // A denial that the model merely agreed with was decided by the rules.
       source: result.decision === "denied" ? "policy_engine" : "ai_assisted",
       ai: outcome.assessment,
-      aiStep: { consulted: true, mode, error: null },
+      aiStep: { ...this.consulted(mode), error: null },
       flags: [...signals, ...result.flags],
       conflict: result.conflict,
     };
   }
 
-  private async consultClaude(
+  private async consultModel(
     ctx: RefundContext,
     policy: PolicyEvaluation,
     mode: AiMode,
   ): Promise<{ assessment: RefundAssessment } | { error: string; detail?: string }> {
-    const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
-      model: MODEL,
-      max_tokens: 16000,
-      thinking: { type: "adaptive" },
-      // Re-runs a safety-declined request on Anthropic's recommended fallback model.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      system: this.systemPrompt,
-      tools: [ASSESSMENT_TOOL],
-      // Forced tool_choice is incompatible with thinking; the prompt requires the
-      // call, and a missing call is handled below.
-      tool_choice: { type: "auto", disable_parallel_tool_use: true },
-      messages: [{ role: "user", content: buildUserMessage(ctx, policy, mode) }],
-    };
+    const user = buildUserMessage(ctx, policy, mode);
+    // Only the provider call is guarded; its adapters turn every failure (API
+    // error, network, missing credentials, refusal, no tool call) into an error code.
+    const outcome = await this.provider.assess({ system: this.systemPrompt, user, tool: ASSESSMENT_TOOL });
+    if ("error" in outcome) return outcome;
 
-    // Only the SDK call is guarded: any failure there (API error, network,
-    // missing credentials) means "AI unavailable" and escalates to a human.
-    let response: Anthropic.Beta.BetaMessage;
-    try {
-      response = await this.client.beta.messages.create(params);
-    } catch (err) {
-      if (err instanceof Anthropic.APIError) {
-        return { error: `ai_api_error_${err.status ?? "network"}`, detail: err.message };
-      }
-      return { error: "ai_client_error", detail: err instanceof Error ? err.message : String(err) };
-    }
-
-    if (response.stop_reason === "refusal") return { error: "ai_refused" };
-    if (response.stop_reason === "max_tokens") return { error: "ai_truncated" };
-
-    const call = response.content.find(
-      (b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use" && b.name === ASSESSMENT_TOOL_NAME,
-    );
-    if (!call) return { error: "ai_no_assessment" };
-
-    const assessment = parseAssessment(call.input);
+    const assessment = parseAssessment(outcome.toolInput);
     return assessment ? { assessment } : { error: "ai_invalid_assessment" };
+  }
+
+  private consulted(mode: AiMode) {
+    return { consulted: true as const, mode, provider: this.provider.name, model: this.provider.model };
   }
 
   private logInjection(ctx: RefundContext, labels: string[]): void {

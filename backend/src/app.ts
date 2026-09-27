@@ -8,6 +8,8 @@ import type { ServiceDeps } from "./services/refundService";
 
 export interface AppOptions extends ServiceDeps {
   corsOrigins?: string[];
+  /** Active LLM provider, reported by /health (never includes the key). */
+  ai?: { provider: string; model: string | null; configured: boolean };
 }
 
 export function createApp(options: AppOptions): Express {
@@ -23,7 +25,11 @@ export function createApp(options: AppOptions): Express {
     } catch {
       database = "unavailable";
     }
-    res.status(database === "ok" ? 200 : 503).json({ status: database === "ok" ? "ok" : "degraded", database });
+    res.status(database === "ok" ? 200 : 503).json({
+      status: database === "ok" ? "ok" : "degraded",
+      database,
+      ...(options.ai ? { ai: options.ai } : {}),
+    });
   });
 
   app.use("/refund-requests", refundRequestsRouter(options));

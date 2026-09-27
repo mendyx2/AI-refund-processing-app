@@ -20,12 +20,12 @@ let claudeDown = false;
 const create = vi.fn<MessagesClient["beta"]["messages"]["create"]>(async () => {
   if (claudeDown) throw new Error("Could not resolve authentication method.");
   return {
-  id: "msg_test",
-  type: "message",
-  role: "assistant",
-  model: "claude-opus-5",
-  stop_reason: "tool_use",
-  content: [{ type: "tool_use", id: "toolu_test", name: ASSESSMENT_TOOL_NAME, input: nextAssessment }],
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    model: "claude-opus-5",
+    stop_reason: "tool_use",
+    content: [{ type: "tool_use", id: "toolu_test", name: ASSESSMENT_TOOL_NAME, input: nextAssessment }],
   } as unknown as Anthropic.Beta.BetaMessage;
 });
 
@@ -56,7 +56,12 @@ afterAll(async () => {
 beforeEach(async () => {
   create.mockClear();
   claudeDown = false;
-  nextAssessment = { reasoning: "Consistent with a defect.", recommendedDecision: "approved", confidence: 0.95, flags: [] };
+  nextAssessment = {
+    reasoning: "Consistent with a defect.",
+    recommendedDecision: "approved",
+    confidence: 0.95,
+    flags: [],
+  };
   await prisma.refundRequest.deleteMany();
   await prisma.order.deleteMany();
   await prisma.customer.deleteMany();
@@ -81,12 +86,20 @@ function createOrder(customerId: number, overrides: Record<string, unknown> = {}
   });
 }
 
-const submit = (body: unknown) => request(app).post("/refund-requests").send(body as object);
+const submit = (body: unknown) =>
+  request(app)
+    .post("/refund-requests")
+    .send(body as object);
 
 describe("POST /refund-requests", () => {
   it("approves a clear-cut request Claude confirms, marks the order refunded, and stores the trace", async () => {
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "Changed my mind", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Changed my mind",
+      reason: "CHANGED_MIND",
+    });
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -105,7 +118,13 @@ describe("POST /refund-requests", () => {
       "ai",
       "final",
     ]);
-    expect(res.body.reasoningLog[2]).toMatchObject({ consulted: true, mode: "assessment", outcome: "assessment" });
+    expect(res.body.reasoningLog[2]).toMatchObject({
+      consulted: true,
+      mode: "assessment",
+      outcome: "assessment",
+      provider: "anthropic",
+      model: "claude-opus-5",
+    });
     expect(res.body.customerMessage).toMatch(/^Good news: your refund of \$80\.00 for the Desk Lamp/);
     expect(create).toHaveBeenCalledOnce();
   });
@@ -118,16 +137,35 @@ describe("POST /refund-requests", () => {
       flags: ["conflicting_request"],
     };
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It arrived broken.", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "It arrived broken.",
+      reason: "CHANGED_MIND",
+    });
 
-    expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted", flags: ["conflicting_request"] });
+    expect(res.body).toMatchObject({
+      status: "ESCALATED",
+      decisionSource: "ai_assisted",
+      flags: ["conflicting_request"],
+    });
     expect(res.body.customerMessage).toMatch(/member of our support team/);
   });
 
   it("escalates a reason-dependent denial Claude marks as conflicting", async () => {
-    nextAssessment = { reasoning: "Describes damage.", recommendedDecision: "escalated", confidence: 0.9, flags: ["conflicting_request"] };
+    nextAssessment = {
+      reasoning: "Describes damage.",
+      recommendedDecision: "escalated",
+      confidence: 0.9,
+      flags: ["conflicting_request"],
+    };
     const order = await createOrder(alice.id, { isFinalSale: true });
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It came smashed.", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "It came smashed.",
+      reason: "CHANGED_MIND",
+    });
 
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted" });
     expect(res.body.reasoningLog[0]).toMatchObject({ stage: "policy_engine", decision: "DENY", rule: "FINAL_SALE" });
@@ -139,17 +177,30 @@ describe("POST /refund-requests", () => {
     const res = await submit({ customerId: alice.id, orderId: order.id, message: "Broke", reason: "DEFECTIVE" });
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ status: "DENIED", decisionSource: "policy_engine", order: { status: "DELIVERED" } });
+    expect(res.body).toMatchObject({
+      status: "DENIED",
+      decisionSource: "policy_engine",
+      order: { status: "DELIVERED" },
+    });
     expect(res.body.decisionNotes).toMatch(/60-day refund window/);
     expect(create).not.toHaveBeenCalled();
   });
 
   it("consults Claude for judgment calls and records its assessment", async () => {
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "Switch is broken", reason: "DEFECTIVE" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Switch is broken",
+      reason: "DEFECTIVE",
+    });
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ status: "APPROVED", decisionSource: "ai_assisted", decisionNotes: "Consistent with a defect." });
+    expect(res.body).toMatchObject({
+      status: "APPROVED",
+      decisionSource: "ai_assisted",
+      decisionNotes: "Consistent with a defect.",
+    });
     expect(res.body.reasoningLog[2]).toMatchObject({
       stage: "ai",
       consulted: true,
@@ -161,7 +212,12 @@ describe("POST /refund-requests", () => {
   });
 
   it("escalates (not denies) when Claude recommends denial", async () => {
-    nextAssessment = { reasoning: "Claim contradicts order.", recommendedDecision: "denied", confidence: 0.9, flags: ["claim_inconsistent_with_order"] };
+    nextAssessment = {
+      reasoning: "Claim contradicts order.",
+      recommendedDecision: "denied",
+      confidence: 0.9,
+      flags: ["claim_inconsistent_with_order"],
+    };
     const order = await createOrder(alice.id);
     const res = await submit({ customerId: alice.id, orderId: order.id, message: "Wrong item", reason: "WRONG_ITEM" });
 
@@ -180,7 +236,11 @@ describe("POST /refund-requests", () => {
 
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "injection_guard", injectionDetected: true });
     expect(res.body.flags).toContain("injection:ignore_instructions");
-    expect(res.body.reasoningLog[1]).toEqual({ stage: "injection_scan", detected: true, labels: ["ignore_instructions"] });
+    expect(res.body.reasoningLog[1]).toEqual({
+      stage: "injection_scan",
+      detected: true,
+      labels: ["ignore_instructions"],
+    });
     expect(res.body.customerMessage).toMatch(/member of our support team/);
     expect(res.body.customerMessage).not.toMatch(/injection/i);
     expect(create).not.toHaveBeenCalled();
@@ -197,7 +257,14 @@ describe("POST /refund-requests", () => {
     for (const d of [3, 6]) {
       const o = await createOrder(alice.id);
       await prisma.refundRequest.create({
-        data: { orderId: o.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 100, status: "DENIED", requestedAt: daysAgo(d) },
+        data: {
+          orderId: o.id,
+          customerId: alice.id,
+          reason: "CHANGED_MIND",
+          amountCents: 100,
+          status: "DENIED",
+          requestedAt: daysAgo(d),
+        },
       });
     }
     const order = await createOrder(alice.id);
@@ -253,7 +320,11 @@ describe("POST /refund-requests", () => {
 
   it("returns a generic 500 without leaking internals on unexpected errors", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const failing: RefundAssessor = { assessRefundRequest: async () => { throw new Error("secret internals"); } };
+    const failing: RefundAssessor = {
+      assessRefundRequest: async () => {
+        throw new Error("secret internals");
+      },
+    };
     const order = await createOrder(alice.id);
     const res = await request(createApp({ prisma, assessor: failing }))
       .post("/refund-requests")
@@ -271,10 +342,24 @@ describe("GET /refund-requests", () => {
     const o1 = await createOrder(alice.id);
     const o2 = await createOrder(bob.id);
     await prisma.refundRequest.create({
-      data: { orderId: o1.id, customerId: alice.id, reason: "OTHER", amountCents: 1, status: "DENIED", requestedAt: daysAgo(5) },
+      data: {
+        orderId: o1.id,
+        customerId: alice.id,
+        reason: "OTHER",
+        amountCents: 1,
+        status: "DENIED",
+        requestedAt: daysAgo(5),
+      },
     });
     await prisma.refundRequest.create({
-      data: { orderId: o2.id, customerId: bob.id, reason: "OTHER", amountCents: 1, status: "PENDING", requestedAt: daysAgo(1) },
+      data: {
+        orderId: o2.id,
+        customerId: bob.id,
+        reason: "OTHER",
+        amountCents: 1,
+        status: "PENDING",
+        requestedAt: daysAgo(1),
+      },
     });
 
     const res = await request(app).get("/refund-requests");
@@ -315,12 +400,23 @@ describe("POST /refund-requests/:id/rerun", () => {
   it("decides a seeded pending request and records the re-run in the trace", async () => {
     const order = await createOrder(alice.id, { deliveredAt: daysAgo(20), orderedAt: daysAgo(24) });
     const seeded = await prisma.refundRequest.create({
-      data: { orderId: order.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 80_00, requestedAt: daysAgo(2) },
+      data: {
+        orderId: order.id,
+        customerId: alice.id,
+        reason: "CHANGED_MIND",
+        amountCents: 80_00,
+        requestedAt: daysAgo(2),
+      },
     });
 
     const res = await rerun(seeded.id);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: seeded.id, status: "APPROVED", decisionSource: "ai_assisted", order: { status: "REFUNDED" } });
+    expect(res.body).toMatchObject({
+      id: seeded.id,
+      status: "APPROVED",
+      decisionSource: "ai_assisted",
+      order: { status: "REFUNDED" },
+    });
     expect(res.body.reasoningLog[0]).toMatchObject({
       stage: "rerun",
       previousStatus: "PENDING",
@@ -340,7 +436,13 @@ describe("POST /refund-requests/:id/rerun", () => {
     // Delivered 40 days ago, requested 15 days ago (day 25 of 30): still in window.
     const order = await createOrder(alice.id, { deliveredAt: daysAgo(40), orderedAt: daysAgo(44) });
     const seeded = await prisma.refundRequest.create({
-      data: { orderId: order.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 80_00, requestedAt: daysAgo(15) },
+      data: {
+        orderId: order.id,
+        customerId: alice.id,
+        reason: "CHANGED_MIND",
+        amountCents: 80_00,
+        requestedAt: daysAgo(15),
+      },
     });
     expect((await rerun(seeded.id)).body.status).toBe("APPROVED");
   });
@@ -348,13 +450,22 @@ describe("POST /refund-requests/:id/rerun", () => {
   it("recovers a request escalated while Claude was unavailable", async () => {
     const order = await createOrder(alice.id);
     claudeDown = true;
-    const first = await submit({ customerId: alice.id, orderId: order.id, message: "Stopped charging", reason: "DEFECTIVE" });
+    const first = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Stopped charging",
+      reason: "DEFECTIVE",
+    });
     expect(first.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_unavailable" });
 
     claudeDown = false;
     const res = await rerun(first.body.id);
     expect(res.body).toMatchObject({ status: "APPROVED", decisionSource: "ai_assisted" });
-    expect(res.body.reasoningLog[0]).toMatchObject({ stage: "rerun", previousStatus: "ESCALATED", previousSource: "ai_unavailable" });
+    expect(res.body.reasoningLog[0]).toMatchObject({
+      stage: "rerun",
+      previousStatus: "ESCALATED",
+      previousSource: "ai_unavailable",
+    });
   });
 
   it("re-runs still apply the injection guard", async () => {
@@ -421,6 +532,22 @@ describe("GET /customers/:id/orders", () => {
 describe("misc", () => {
   it("reports health", async () => {
     expect((await request(app).get("/health")).body).toEqual({ status: "ok", database: "ok" });
+  });
+
+  it("reports the active AI provider in health, never the key", async () => {
+    const ai = { provider: "openai", model: "gpt-test", configured: true };
+    const res = await request(
+      createApp({
+        prisma,
+        assessor: {
+          assessRefundRequest: async () => {
+            throw new Error();
+          },
+        },
+        ai,
+      }),
+    ).get("/health");
+    expect(res.body).toEqual({ status: "ok", database: "ok", ai });
   });
 
   it("returns a JSON 404 for unknown routes", async () => {

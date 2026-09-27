@@ -2,6 +2,42 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Any AI provider (`backend/src/ai/`)
+
+- **Why:** reviewers may only have an OpenAI or Gemini key, and the app
+  should not be tied to one vendor.
+- **Two adapters behind `AssessmentProvider`** (`providers.ts`):
+  - **Anthropic:** Messages API, strict tool, adaptive thinking, server-side
+    refusal fallback.
+  - **OpenAI-style** (Chat Completions function calling): OpenAI, Gemini (via
+    Google's OpenAI-compatible endpoint), and any OpenAI-compatible API
+    (Groq, Mistral, DeepSeek, OpenRouter, Together, Ollama, LM Studio).
+  - On native OpenAI the function is forced and strict. Other compatible APIs
+    get `tool_choice: "auto"` with no strict flag, because support varies; a
+    missing call is caught as `ai_no_assessment`.
+- **Adapters only transport.** They return raw tool input or an error code.
+  Validation (`parseAssessment`), reconciliation and every guardrail stay in
+  `aiLayer.ts`, so the policy-wins guarantee is provider-independent. The
+  guardrail suite runs once per adapter to prove it.
+- **Selection** (`config.ts`, pure and unit-tested):
+  1. `AI_PROVIDER`, if set.
+  2. Else the first of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+     `GEMINI_API_KEY`/`GOOGLE_API_KEY`.
+  3. Else `AI_API_KEY`: with `AI_BASE_URL` it's OpenAI-compatible; otherwise
+     the provider is inferred from the key's prefix.
+
+  `AI_MODEL` and `AI_BASE_URL` override. Misconfiguration falls back to "no
+  provider" with a logged reason rather than crashing the backend.
+- **No key → `UnconfiguredProvider`:** requests get `ai_not_configured`
+  (logged once at startup, not on every request). Behavior is the same as
+  "AI unavailable".
+- **The trace records `provider` and `model`** on the AI step. `/health` and
+  the admin header show the active provider (never the key).
+- **Compose passes all the variables** and adds `host.docker.internal` so a
+  host-side Ollama is reachable on Linux too.
+- **Unverified:** the OpenAI/Gemini default model names, and how well each
+  provider follows the tool-call instruction. The tests use fake clients only.
+
 ## Conflicting requests (policy §5)
 
 - **Why:** the brief says "suspicious or conflicting requests should be

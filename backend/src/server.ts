@@ -1,3 +1,4 @@
+import { createProvider, describeAiConfig, resolveAiConfig } from "./ai/config";
 import { RefundAiLayer } from "./aiLayer";
 import { createApp } from "./app";
 import { createPrisma } from "./db";
@@ -5,15 +6,24 @@ import { createPrisma } from "./db";
 const port = Number(process.env.PORT ?? 8000);
 const corsOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((o) => o.trim());
 
-if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+const aiConfig = resolveAiConfig(process.env);
+const ai = describeAiConfig(aiConfig);
+if (aiConfig.provider === "none") {
   console.warn(
-    "ANTHROPIC_API_KEY is not set: judgment-call refund requests will be escalated to a human " +
-      "(unless credentials come from an `ant auth login` profile).",
+    `AI provider not configured (${aiConfig.reason}). Requests that need the model's judgment will be ` +
+      "escalated to a human; the policy engine still decides everything else. See .env.example.",
   );
+} else {
+  console.log(`AI provider: ${ai.provider}, model: ${ai.model}`);
 }
 
 const prisma = createPrisma();
-const app = createApp({ prisma, assessor: new RefundAiLayer(), corsOrigins });
+const app = createApp({
+  prisma,
+  assessor: new RefundAiLayer({ provider: createProvider(aiConfig) }),
+  corsOrigins,
+  ai,
+});
 
 const server = app.listen(port, () => {
   console.log(`Refund API listening on http://0.0.0.0:${port}`);
