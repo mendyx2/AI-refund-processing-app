@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateRefundRequest,
   isFinalSale,
+  isReasonSensitiveDenial,
   isSuspiciousPattern,
   isWithinRefundWindow,
   requiresHumanReview,
@@ -195,5 +196,34 @@ describe("evaluateRefundRequest", () => {
     );
     expect(result.decision).toBe("ESCALATE");
     expect(result.reasons).toHaveLength(3);
+  });
+});
+
+describe("isReasonSensitiveDenial", () => {
+  const sensitive = (o: Partial<PolicyOrder>, r: Partial<PolicyRefundRequest> = {}) => {
+    const ord = order(o);
+    const req = request(r);
+    const evaluation = evaluateRefundRequest({ order: ord, request: req, customerRequests: [], now: NOW });
+    return isReasonSensitiveDenial(evaluation, ord, req, NOW);
+  };
+
+  it("is true for a final-sale denial under a buyer-side reason", () => {
+    expect(sensitive({ isFinalSale: true })).toBe(true);
+  });
+
+  it("is true for a 31-60 day window denial under a buyer-side reason", () => {
+    expect(sensitive({ deliveredAt: daysAgo(31) })).toBe(true);
+    expect(sensitive({ deliveredAt: daysAgo(60) })).toBe(true);
+  });
+
+  it("is false once no reason code could change the outcome", () => {
+    expect(sensitive({ deliveredAt: daysAgo(61) })).toBe(false);
+    expect(sensitive({ status: "REFUNDED" })).toBe(false);
+    expect(sensitive({ status: "CANCELLED" })).toBe(false);
+    expect(sensitive({ totalCents: 10_00 }, { amountCents: 20_00 })).toBe(false);
+  });
+
+  it("is false when a seller-fault reason was already chosen", () => {
+    expect(sensitive({ deliveredAt: daysAgo(61) }, { reason: "DEFECTIVE" })).toBe(false);
   });
 });

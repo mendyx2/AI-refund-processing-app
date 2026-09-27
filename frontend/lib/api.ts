@@ -57,6 +57,8 @@ export type ReasoningStep =
       stage: "ai";
       consulted: true;
       model: string;
+      /** assessment: rule-approved request; consistency_check: reason-dependent denial. Absent on older traces. */
+      mode?: "assessment" | "consistency_check";
       outcome: "assessment" | "unavailable";
       recommendation?: "approved" | "denied" | "escalated";
       confidence?: number;
@@ -157,8 +159,7 @@ export const api = {
 
   listRefundRequests: (signal?: AbortSignal) => request<RefundListItem[]>("/refund-requests", { signal }),
 
-  getRefundRequest: (id: number, signal?: AbortSignal) =>
-    request<RefundDetail>(`/refund-requests/${id}`, { signal }),
+  getRefundRequest: (id: number, signal?: AbortSignal) => request<RefundDetail>(`/refund-requests/${id}`, { signal }),
 
   /** Staff action; may consult Claude. */
   rerunRefundRequest: (id: number) =>

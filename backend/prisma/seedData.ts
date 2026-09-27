@@ -239,6 +239,26 @@ export const customers: SeedCustomer[] = [
         ],
       },
       {
+        // Conflicting request: reason says "changed my mind" but the text
+        // describes a broken item. Rules allow it; Claude should flag the
+        // conflict and send it to a human (policy §5).
+        product: "JBL Flip 6 Speaker",
+        category: "Electronics",
+        total: 129.95,
+        status: "DELIVERED",
+        orderedDaysAgo: 8,
+        deliveredDaysAgo: 4,
+        refunds: [
+          {
+            reason: "CHANGED_MIND",
+            description: "Changed my mind. It arrived with a cracked casing and won't turn on anyway.",
+            requestedDaysAgo: 0,
+            status: "PENDING",
+            expected: "APPROVE",
+          },
+        ],
+      },
+      {
         product: "Kindle Paperwhite",
         category: "Electronics",
         total: 149.99,

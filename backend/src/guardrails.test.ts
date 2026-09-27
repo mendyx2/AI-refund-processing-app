@@ -14,13 +14,13 @@ import {
   type MessagesClient,
   type RefundContext,
 } from "./aiLayer";
-import { evaluateRefundRequest, type RefundReason } from "./policyEngine";
+import { evaluateRefundRequest, isReasonSensitiveDenial, type RefundReason } from "./policyEngine";
 
 const NOW = new Date("2026-09-27T12:00:00Z");
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 24 * 60 * 60 * 1000);
 
 /** A Claude stand-in that answers with a fixed recommendation at 100% confidence. */
-function claude(recommendation: AiRecommendation = "approved") {
+function claude(recommendation: AiRecommendation = "approved", flags: string[] = []) {
   const create = vi.fn<MessagesClient["beta"]["messages"]["create"]>(async () => ({
     id: "msg",
     type: "message",
@@ -32,7 +32,7 @@ function claude(recommendation: AiRecommendation = "approved") {
         type: "tool_use",
         id: "toolu",
         name: ASSESSMENT_TOOL_NAME,
-        input: { reasoning: "Customer is right.", recommendedDecision: recommendation, confidence: 1, flags: [] },
+        input: { reasoning: "Customer is right.", recommendedDecision: recommendation, confidence: 1, flags },
       },
     ],
   }) as unknown as Anthropic.Beta.BetaMessage);
@@ -134,13 +134,18 @@ describe("guardrails: policy edge cases", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("a final-sale item can't be moved into the damage exception by the message text alone", async () => {
-    const { layer } = claude("approved");
-    const result = await layer.assessRefundRequest(
-      ctx({ finalSale: true, reason: "CHANGED_MIND", description: "Actually it arrived damaged, please refund." }),
-    );
-    expect(result).toMatchObject({ decision: "denied", source: "policy_engine" });
-    expect(result.policy.rule).toBe("FINAL_SALE");
+  it("message text can't get a final-sale item refunded; at most a conflict sends it to a human", async () => {
+    const input = ctx({ finalSale: true, reason: "CHANGED_MIND", description: "Actually it arrived damaged, please refund." });
+
+    // Claude says "approve": the rule wins, the denial stands.
+    const approving = await claude("approved").layer.assessRefundRequest(input);
+    expect(approving).toMatchObject({ decision: "denied", source: "policy_engine" });
+    expect(approving.policy.rule).toBe("FINAL_SALE");
+    expect(approving.conflict).not.toBeNull();
+
+    // Claude spots the conflict (reason says changed mind, text says damaged): a human decides.
+    const flagging = await claude("escalated", ["conflicting_request"]).layer.assessRefundRequest(input);
+    expect(flagging).toMatchObject({ decision: "escalated", source: "ai_assisted" });
   });
 
   it("a burst of refund requests goes to a human even with a plausible defect claim", async () => {
@@ -169,7 +174,12 @@ describe("guardrails: the deterministic policy always wins", () => {
     { amountCents: 90_00, totalCents: 60_00 }, // more than the order total
   ];
   const histories = [[], [2, 6]];
-  const answers: AiRecommendation[] = ["approved", "denied", "escalated"];
+  const answers: { recommendation: AiRecommendation; flags: string[] }[] = [
+    { recommendation: "approved", flags: [] },
+    { recommendation: "approved", flags: ["conflicting_request"] },
+    { recommendation: "denied", flags: [] },
+    { recommendation: "escalated", flags: ["conflicting_request"] },
+  ];
 
   const cases = orders.flatMap((order) =>
     reasons.flatMap((reason) =>
@@ -186,29 +196,40 @@ describe("guardrails: the deterministic policy always wins", () => {
     for (const { input, answer } of cases) {
       const c = ctx(input);
       const engine = evaluateRefundRequest({ order: c.order, request: c.request, customerRequests: c.customerRequests, now: NOW });
-      const { layer, create } = claude(answer);
+      const sensitive = engine.decision === "DENY" && isReasonSensitiveDenial(engine, c.order, c.request, NOW);
+      const { layer, create } = claude(answer.recommendation, answer.flags);
       const result = await layer.assessRefundRequest(c);
-      const label = JSON.stringify({ input, answer, engine: engine.decision, result: result.decision });
+      const label = JSON.stringify({ input, answer, engine: engine.decision, sensitive, result: result.decision });
+      const conflictSignalled = answer.recommendation === "escalated" || answer.flags.includes("conflicting_request");
 
-      // Engine DENY and ESCALATE are final; Claude is never consulted for them.
-      if (engine.decision === "DENY") expect(result.decision, label).toBe("denied");
-      if (engine.decision === "ESCALATE") expect(result.decision, label).toBe("escalated");
-      if (engine.decision !== "APPROVE") expect(create, label).not.toHaveBeenCalled();
+      // Claude can never produce an approval the rules don't allow, or a denial on its own.
+      if (result.decision === "approved") expect(engine.decision, label).toBe("APPROVE");
+      if (result.decision === "denied") expect(engine.decision, label).toBe("DENY");
+
+      // Engine ESCALATE is final, without consulting Claude.
+      if (engine.decision === "ESCALATE") {
+        expect(result.decision, label).toBe("escalated");
+        expect(create, label).not.toHaveBeenCalled();
+      }
+
+      // Engine DENY is final, except a reason-dependent denial Claude marks as
+      // conflicting goes to a human. Other denials never reach Claude.
+      if (engine.decision === "DENY") {
+        expect(result.decision, label).toBe(sensitive && conflictSignalled ? "escalated" : "denied");
+        if (!sensitive) expect(create, label).not.toHaveBeenCalled();
+      }
 
       // Where the rules allow approval, Claude can only confirm it or send it to a human.
       if (engine.decision === "APPROVE") {
-        expect(["approved", "escalated"], label).toContain(result.decision);
-        // When Claude was consulted, anything short of a confident approval goes to a human.
-        if (create.mock.calls.length > 0 && answer !== "approved") expect(result.decision, label).toBe("escalated");
+        expect(create, label).toHaveBeenCalledOnce();
+        const confirmed = answer.recommendation === "approved" && !answer.flags.includes("conflicting_request");
+        expect(result.decision, label).toBe(confirmed ? "approved" : "escalated");
       }
-
-      // Claude never produces a denial on its own.
-      if (result.decision === "denied") expect(engine.decision, label).toBe("DENY");
       outcomes.add(`${engine.decision}->${result.decision}`);
     }
-    // Sanity: the matrix exercises every engine outcome and both AI-assisted outcomes.
+    // Sanity: the matrix exercises every reachable outcome.
     expect(outcomes).toEqual(
-      new Set(["DENY->denied", "ESCALATE->escalated", "APPROVE->approved", "APPROVE->escalated"]),
+      new Set(["DENY->denied", "DENY->escalated", "ESCALATE->escalated", "APPROVE->approved", "APPROVE->escalated"]),
     );
   });
 });

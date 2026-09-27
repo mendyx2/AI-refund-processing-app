@@ -84,14 +84,14 @@ function createOrder(customerId: number, overrides: Record<string, unknown> = {}
 const submit = (body: unknown) => request(app).post("/refund-requests").send(body as object);
 
 describe("POST /refund-requests", () => {
-  it("auto-approves a clear-cut request, marks the order refunded, and stores the trace", async () => {
+  it("approves a clear-cut request Claude confirms, marks the order refunded, and stores the trace", async () => {
     const order = await createOrder(alice.id);
     const res = await submit({ customerId: alice.id, orderId: order.id, message: "Changed my mind", reason: "CHANGED_MIND" });
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
       status: "APPROVED",
-      decisionSource: "policy_engine",
+      decisionSource: "ai_assisted",
       injectionDetected: false,
       amountCents: 80_00,
       description: "Changed my mind",
@@ -105,9 +105,33 @@ describe("POST /refund-requests", () => {
       "ai",
       "final",
     ]);
-    expect(res.body.reasoningLog[2]).toMatchObject({ consulted: false });
+    expect(res.body.reasoningLog[2]).toMatchObject({ consulted: true, mode: "assessment", outcome: "assessment" });
     expect(res.body.customerMessage).toMatch(/^Good news: your refund of \$80\.00 for the Desk Lamp/);
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("escalates a request whose message conflicts with its reason, with a neutral customer message", async () => {
+    nextAssessment = {
+      reasoning: "Reason is 'changed mind' but the customer describes a defect.",
+      recommendedDecision: "escalated",
+      confidence: 0.9,
+      flags: ["conflicting_request"],
+    };
+    const order = await createOrder(alice.id);
+    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It arrived broken.", reason: "CHANGED_MIND" });
+
+    expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted", flags: ["conflicting_request"] });
+    expect(res.body.customerMessage).toMatch(/member of our support team/);
+  });
+
+  it("escalates a reason-dependent denial Claude marks as conflicting", async () => {
+    nextAssessment = { reasoning: "Describes damage.", recommendedDecision: "escalated", confidence: 0.9, flags: ["conflicting_request"] };
+    const order = await createOrder(alice.id, { isFinalSale: true });
+    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It came smashed.", reason: "CHANGED_MIND" });
+
+    expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted" });
+    expect(res.body.reasoningLog[0]).toMatchObject({ stage: "policy_engine", decision: "DENY", rule: "FINAL_SALE" });
+    expect(res.body.reasoningLog[2]).toMatchObject({ mode: "consistency_check" });
   });
 
   it("denies on hard rules without consulting Claude", async () => {
@@ -296,7 +320,7 @@ describe("POST /refund-requests/:id/rerun", () => {
 
     const res = await rerun(seeded.id);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: seeded.id, status: "APPROVED", decisionSource: "policy_engine", order: { status: "REFUNDED" } });
+    expect(res.body).toMatchObject({ id: seeded.id, status: "APPROVED", decisionSource: "ai_assisted", order: { status: "REFUNDED" } });
     expect(res.body.reasoningLog[0]).toMatchObject({
       stage: "rerun",
       previousStatus: "PENDING",

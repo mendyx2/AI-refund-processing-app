@@ -2,7 +2,7 @@
  * Refund-request workflow: load the facts, run the policy engine + AI layer,
  * and persist the decision with its full reasoning trace.
  */
-import { MODEL, type AssessmentResult, type FinalDecision, type RefundContext } from "../aiLayer";
+import { MODEL, type AiMode, type AssessmentResult, type FinalDecision, type RefundContext } from "../aiLayer";
 import type { Db } from "../db";
 import { conflict, notFound } from "../errors";
 import { Prisma } from "../generated/prisma/client";
@@ -53,6 +53,8 @@ export type ReasoningStep =
       stage: "ai";
       consulted: true;
       model: string;
+      /** assessment: rule-approved request; consistency_check: reason-dependent denial. */
+      mode: AiMode;
       outcome: "assessment" | "unavailable";
       recommendation?: string;
       confidence?: number;
@@ -68,9 +70,6 @@ export function injectionLabels(flags: readonly string[]): string[] {
   return flags.filter((f) => f.startsWith(INJECTION_PREFIX)).map((f) => f.slice(INJECTION_PREFIX.length));
 }
 
-/** Failure codes the AI layer records when Claude could not be used (ai_api_error_500, ...). */
-const aiErrors = (flags: readonly string[]) => flags.filter((f) => f.startsWith("ai_")).join(", ");
-
 /** Turns an AssessmentResult into the ordered trace stored with the request. */
 export function buildReasoningLog(result: AssessmentResult, model = MODEL): ReasoningStep[] {
   const labels = injectionLabels(result.flags);
@@ -79,35 +78,23 @@ export function buildReasoningLog(result: AssessmentResult, model = MODEL): Reas
     { stage: "injection_scan", detected: labels.length > 0, labels },
   ];
 
-  switch (result.source) {
-    case "policy_engine":
-      steps.push({
-        stage: "ai",
-        consulted: false,
-        skippedBecause:
-          result.policy.decision === "APPROVE"
-            ? "Clear-cut request; no judgment needed"
-            : "Policy engine decision is final",
-      });
-      break;
-    case "injection_guard":
-      steps.push({ stage: "ai", consulted: false, skippedBecause: "Possible prompt injection; escalated to a human" });
-      break;
-    case "ai_assisted":
-      steps.push({
-        stage: "ai",
-        consulted: true,
-        model,
-        outcome: "assessment",
-        recommendation: result.ai?.recommendedDecision,
-        confidence: result.ai?.confidence,
-        reasoning: result.ai?.reasoning,
-        flags: result.ai?.flags,
-      });
-      break;
-    case "ai_unavailable":
-      steps.push({ stage: "ai", consulted: true, model, outcome: "unavailable", error: aiErrors(result.flags) });
-      break;
+  const ai = result.aiStep;
+  if (!ai.consulted) {
+    steps.push({ stage: "ai", consulted: false, skippedBecause: ai.skippedBecause });
+  } else if (ai.error) {
+    steps.push({ stage: "ai", consulted: true, model, mode: ai.mode, outcome: "unavailable", error: ai.error });
+  } else {
+    steps.push({
+      stage: "ai",
+      consulted: true,
+      model,
+      mode: ai.mode,
+      outcome: "assessment",
+      recommendation: result.ai?.recommendedDecision,
+      confidence: result.ai?.confidence,
+      reasoning: result.ai?.reasoning,
+      flags: result.ai?.flags,
+    });
   }
 
   steps.push({ stage: "final", decision: result.decision, source: result.source, conflict: result.conflict });
@@ -122,7 +109,7 @@ export function decisionSummary(result: AssessmentResult): string {
     case "injection_guard":
       return `Escalated for human review: possible prompt injection (${injectionLabels(result.flags).join(", ")})`;
     case "ai_unavailable":
-      return `Escalated for human review: AI assessment unavailable (${aiErrors(result.flags)})`;
+      return `Escalated for human review: AI assessment unavailable (${result.aiStep.consulted ? result.aiStep.error : ""})`;
     case "policy_engine":
       return result.policy.reasons.join("; ");
   }

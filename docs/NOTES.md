@@ -2,6 +2,37 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Conflicting requests (policy §5)
+
+- **Why:** the brief says "suspicious or conflicting requests should be
+  escalated". Before this change, a "changed my mind" request saying "it
+  arrived broken" was auto-approved and never examined.
+- **Claude now reviews every rule-approved request**, not only judgment-call
+  reasons. It checks for conflicts between the description and the reason
+  code or order record, and a conflict (`conflicting_request` flag) escalates
+  the request.
+- **Reason-dependent denials get a consistency check.** These are final-sale
+  or 31–60-day denials under a buyer-side reason, where a seller-fault reason
+  would have changed the outcome (`isReasonSensitiveDenial` in
+  `policyEngine.ts`). Claude can only escalate them, never approve.
+  - Denials that no reason could change (>60 days, already refunded,
+    cancelled, over the total) never reach Claude.
+  - Neither do reason-dependent denials whose text trips the injection scan:
+    injection text cannot reopen a denial.
+- **The invariant changed from "never more lenient than the engine"** to "no
+  approval unless the rules allow it, no denial unless the rules require it".
+  Claude's only power is to send a request to a human. The guardrail sweep
+  (now 864 cases) asserts exactly that.
+- **If Claude is unavailable:** clear-cut approvals (change of mind, late
+  delivery, no longer needed) and denials keep the rules' decision; the
+  consistency check is best-effort. Claims resting on the customer's account
+  (defective, damaged, wrong item, not as described, other) are still
+  escalated. This keeps the app usable without an API key.
+- **Cost:** Claude is now called on most rule-approved requests, not only
+  about a third of them.
+- **The trace records the AI step's `mode`:** `assessment` or
+  `consistency_check`.
+
 ## Re-run, guardrails, and Compose
 
 - **Re-run decision** (`POST /refund-requests/:id/rerun`, button on `/admin`):
@@ -26,7 +57,7 @@ Decisions and open questions to fold into the real docs. Newest first.
   and AI layer against a fake Claude that always says "approve, 100%":
   injection variants escalate without calling Claude; a $600 request and a
   final-sale damage claim always go to a human; message text can't move a
-  final-sale item into the damage exception. A 648-case sweep checks that the
+  final-sale item into the damage exception. A sweep (648 cases then, 864 now) checks that the
   final decision is never more permissive than the policy engine's and that
   Claude alone never produces a denial.
 - **Compose:** `db-seed` now runs `db:setup` (schema + seed only if empty)

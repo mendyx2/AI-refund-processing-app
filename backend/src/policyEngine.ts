@@ -145,6 +145,24 @@ export function requiresHumanReview(
   return humanReviewReasons(order, request, customerRequests).length > 0;
 }
 
+/**
+ * §5 (conflicting requests): a denial that exists only because of the reason
+ * code the customer picked. With a seller-fault reason (defective, damaged,
+ * wrong item) the same request would not be denied outright. Only these
+ * denials are worth checking for a conflict between reason and description;
+ * no reason code can change the others (too old, already refunded, ...).
+ */
+export function isReasonSensitiveDenial(
+  evaluation: Pick<PolicyEvaluation, "rule">,
+  order: Pick<PolicyOrder, "orderedAt" | "deliveredAt">,
+  request: Pick<PolicyRefundRequest, "reason">,
+  now: Date,
+): boolean {
+  if (isSellerFault(request.reason)) return false;
+  if (evaluation.rule === "FINAL_SALE") return true;
+  return evaluation.rule === "OUTSIDE_WINDOW" && daysSinceWindowStart(order, now) <= SELLER_FAULT_WINDOW_DAYS;
+}
+
 /** §6: applies the rules in policy order; the first match decides. */
 export function evaluateRefundRequest(input: {
   order: PolicyOrder;

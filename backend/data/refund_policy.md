@@ -48,6 +48,17 @@ Requests of every status (pending, approved, denied, escalated) count.
 
 A flag is not a denial: it routes the request to human review.
 
+### Conflicting requests
+
+A request whose description **contradicts the selected reason or the order
+record** is escalated to human review. For example, the customer picks
+"changed my mind" but describes a broken item, or claims non-delivery for a
+delivered order. This check is applied to every request the rules would
+approve. It also applies to denials that depend only on the reason chosen: a
+final-sale item, or an order 31–60 days old, under a buyer-side reason, where
+a seller-fault reason would have changed the outcome. The check can only send
+a request to a human. It never approves one.
+
 ## 6. Decision order
 
 Requests are evaluated in this order; the first rule that applies decides.
@@ -56,4 +67,6 @@ Requests are evaluated in this order; the first rule that applies decides.
 2. Outside the refund window (§1) → **deny**.
 3. Final sale without a seller-fault reason (§2) → **deny**.
 4. Any human-review trigger (§4) → **escalate**.
-5. Otherwise → **approve**.
+5. Conflicting request (§5) → **escalate**. This also applies to the
+   reason-dependent denials in steps 2–3.
+6. Otherwise → **approve**.

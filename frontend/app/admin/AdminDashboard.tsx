@@ -46,12 +46,14 @@ function flagStyle(flag: string): { label: string; cls: string } {
     return { label: `injection: ${humanize(flag.slice("injection:".length))}`, cls: "bg-rose-100 text-rose-800" };
   }
   if (flag === "suspicious_pattern") return { label: "suspicious pattern", cls: "bg-amber-100 text-amber-900" };
+  if (flag === "conflicting_request") return { label: "conflicting request", cls: "bg-amber-100 text-amber-900" };
   if (flag.startsWith("ai_")) return { label: humanize(flag), cls: "bg-slate-100 text-slate-700" };
   return { label: humanize(flag), cls: "bg-sky-100 text-sky-800" }; // flags raised by Claude
 }
 
-/** Injection or suspicion signals: the ones worth a reviewer's attention first. */
-const isRiskFlag = (f: string) => f.startsWith("injection:") || f === "suspicious_pattern";
+/** Injection, suspicion, and conflict signals: the ones worth a reviewer's attention first. */
+const isRiskFlag = (f: string) =>
+  f.startsWith("injection:") || f === "suspicious_pattern" || f === "conflicting_request";
 
 const errorText = (err: unknown) => {
   if (!(err instanceof ApiError)) return "Something went wrong. Please try again.";
@@ -218,7 +220,7 @@ export default function AdminDashboard() {
             }}
             className="h-4 w-4 rounded border-slate-300"
           />
-          Only injection / suspicion flags
+          Only risk flags (injection, suspicious, conflicting)
         </label>
       </div>
 
@@ -574,16 +576,25 @@ function TraceStep({ step }: { step: ReasoningStep }) {
         return (
           <div>
             <StepTitle>
-              Claude ({step.model}): <b className="text-slate-700">unavailable</b>
+              Claude ({step.model}){step.mode === "consistency_check" ? " consistency check" : ""}:{" "}
+              <b className="text-slate-700">unavailable</b>
             </StepTitle>
-            <p className="mt-1 text-slate-600">Escalated to a human. Error: {step.error}</p>
+            <p className="mt-1 text-slate-600">
+              Check could not run ({step.error}). Clear-cut approvals and denials keep the rules&apos; decision; other
+              requests go to a human.
+            </p>
           </div>
         );
       }
       return (
         <div>
           <StepTitle>
-            Claude ({step.model}) recommends <b>{step.recommendation}</b>
+            {step.mode === "consistency_check" ? (
+              <>Claude ({step.model}) consistency check of a reason-dependent denial: </>
+            ) : (
+              <>Claude ({step.model}) </>
+            )}
+            recommends <b>{step.recommendation}</b>
             {step.confidence !== undefined && (
               <span className="text-slate-500"> · {Math.round(step.confidence * 100)}% confident</span>
             )}
