@@ -1,0 +1,41 @@
+services:
+  db-seed:
+    build: ./backend
+    command: ["python", "-m", "app.seed"]
+    environment:
+      DATABASE_URL: sqlite:////app/db/app.db
+    volumes:
+      - sqlite-data:/app/db
+    restart: "no"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////app/db/app.db
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    volumes:
+      - sqlite-data:/app/db
+    depends_on:
+      db-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  sqlite-data:
