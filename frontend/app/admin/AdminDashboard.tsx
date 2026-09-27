@@ -99,6 +99,9 @@ export default function AdminDashboard() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [details, setDetails] = useState<Record<number, DetailState>>({});
   const [rerunState, setRerunState] = useState<Record<number, RerunState>>({});
+  // Rows re-run since the last filter change stay visible even if their new
+  // status no longer matches the filter, so the result doesn't vanish.
+  const [pinned, setPinned] = useState<Set<number>>(new Set());
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
@@ -107,6 +110,7 @@ export default function AdminDashboard() {
       setRows(await api.listRefundRequests(signal));
       setDetails({}); // decisions may have changed; refetch on expand
       setRerunState({});
+      setPinned(new Set());
     } catch (err) {
       if (!signal?.aborted) setListError(errorText(err));
     } finally {
@@ -132,6 +136,7 @@ export default function AdminDashboard() {
 
   async function rerun(id: number) {
     setRerunState((r) => ({ ...r, [id]: { state: "running" } }));
+    setPinned((p) => new Set(p).add(id));
     try {
       const data = await api.rerunRefundRequest(id);
       setDetails((d) => ({ ...d, [id]: { state: "ok", data } }));
@@ -161,9 +166,11 @@ export default function AdminDashboard() {
   const visible = useMemo(
     () =>
       (rows ?? []).filter(
-        (r) => (filter === "ALL" || r.status === filter) && (!flaggedOnly || (r.flags ?? []).some(isRiskFlag)),
+        (r) =>
+          pinned.has(r.id) ||
+          ((filter === "ALL" || r.status === filter) && (!flaggedOnly || (r.flags ?? []).some(isRiskFlag))),
       ),
-    [rows, filter, flaggedOnly],
+    [rows, filter, flaggedOnly, pinned],
   );
 
   return (
@@ -187,7 +194,10 @@ export default function AdminDashboard() {
           {FILTERS.map((f) => (
             <button
               key={f.value}
-              onClick={() => setFilter(f.value)}
+              onClick={() => {
+                setFilter(f.value);
+                setPinned(new Set());
+              }}
               aria-pressed={filter === f.value}
               className={`rounded-md px-3 py-1 text-sm ${
                 filter === f.value ? "bg-white font-medium shadow-sm" : "text-slate-600 hover:text-slate-900"
@@ -202,7 +212,10 @@ export default function AdminDashboard() {
           <input
             type="checkbox"
             checked={flaggedOnly}
-            onChange={(e) => setFlaggedOnly(e.target.checked)}
+            onChange={(e) => {
+              setFlaggedOnly(e.target.checked);
+              setPinned(new Set());
+            }}
             className="h-4 w-4 rounded border-slate-300"
           />
           Only injection / suspicion flags
