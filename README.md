@@ -105,7 +105,7 @@ cd backend
 npm install            # also generates the Prisma client
 npm run db:setup       # create ./db/app.db and seed it if empty (db:reset starts over)
 npm run dev            # http://localhost:8000
-npm test               # 236 Vitest tests
+npm test               # 273 Vitest tests
 npm run typecheck
 
 # Frontend (separate terminal)
@@ -202,6 +202,7 @@ docs/NOTES.md         Running log of design decisions and open questions
 |---|---|
 | `POST /auth/sign-in` | `{ email, orderNumber }` → `{ token, expiresAt, customer }`. A guest order lookup: the order must belong to that email. It gives one `401` for any mismatch, and allows 10 attempts per IP per 15 minutes (`429` after that). |
 | `GET /me` | *Customer token.* The signed-in customer's orders (newest first) with their refund requests. |
+| `POST /me/suggest-reason` | *Customer token.* `{ orderId, message }` → `{ suggestion: { reason, label, summary, confidence } \| null }`. The AI's guess at the reason for free text, which the chat asks the customer to confirm. `null` when unsure (confidence < 0.6), unavailable, or the text looks like an injection. |
 | `POST /refund-requests` | *Customer token.* `{ orderId, message, reason?, amountCents? }`. The customer comes from the token, never the body. Decides and stores the request, returning 201. `reason` defaults to `OTHER`; the amount defaults to the order total. `409` if the order already has an open request. |
 | `GET /refund-requests` | All requests, newest first. Optional `?status=PENDING\|APPROVED\|DENIED\|ESCALATED`. |
 | `GET /refund-requests/:id` | Full detail, including `reasoningLog`. |
@@ -294,6 +295,31 @@ request ────► │ 1. Policy engine    │── ESCALATE ────�
    - a step-by-step `reasoningLog` (policy → injection scan → AI model → final).
 
    The admin dashboard renders all of it.
+
+### AI in the customer chat
+
+Besides advising on decisions, the model helps in two customer-visible ways.
+Neither can change a decision (`backend/src/ai/assist.ts`).
+
+- **Understanding free text (reason suggestion).** A customer can just type
+  what went wrong, e.g. *"the scroll wheel stopped working after two days"*.
+  The AI suggests the matching reason, and the chat asks *"Shall I file this
+  as 'It's defective or stopped working'?"* with **Yes** / **No, let me
+  choose**.
+  - The customer confirms, so the AI never picks the reason itself. The
+    reason decides the refund window, so it must stay the customer's choice.
+  - If the model is unsure, unavailable, or the text looks like an injection
+    attempt, the chat simply shows the list of reasons.
+- **Writing the reply.** The rules decide and produce a plain explanation.
+  The AI then rewrites it warmly and personally, e.g. *"Hi Liam, thanks for
+  letting us know, and sorry for the trouble. Good news: your refund of
+  $99.99 … has been approved."*
+  - The reply is checked before use. If it contradicts the decision, drops
+    the refund amount, or mentions internal checks (AI, fraud, flags…), the
+    rule-based template is used instead.
+  - Injection-flagged requests always get the template.
+  - The trace's last step (`reply`) records who wrote it, and the customer
+    sees a small "AI-assisted reply" tag.
 
 ### Why decisions are policy-enforced, not AI-decided
 

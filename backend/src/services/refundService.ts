@@ -7,6 +7,7 @@ import type { Db } from "../db";
 import { conflict, notFound } from "../errors";
 import { Prisma } from "../generated/prisma/client";
 import type { RefundReason, RefundStatus } from "../generated/prisma/enums";
+import type { AssistOutcome, ReasonSuggestion, ReplyInput } from "../ai/assist";
 import { customerMessage } from "./customerMessage";
 
 /** The part of the AI layer the service depends on (injectable for tests). */
@@ -14,9 +15,21 @@ export interface RefundAssessor {
   assessRefundRequest(ctx: RefundContext): Promise<AssessmentResult>;
 }
 
+/** Customer-facing AI help (ai/assist.ts); optional, everything falls back to templates. */
+export interface CustomerAssist {
+  readonly providerName: string;
+  readonly model: string;
+  writeReply(input: ReplyInput): Promise<AssistOutcome<string>>;
+  suggestReason(
+    order: { productName: string; category: string; status: string },
+    message: string,
+  ): Promise<{ ok: ReasonSuggestion } | { error: string }>;
+}
+
 export interface ServiceDeps {
   prisma: Db;
   assessor: RefundAssessor;
+  assistant?: CustomerAssist;
   now?: () => Date;
 }
 
@@ -64,7 +77,16 @@ export type ReasoningStep =
       flags?: string[];
       error?: string;
     }
-  | { stage: "final"; decision: FinalDecision; source: string; conflict: string | null };
+  | { stage: "final"; decision: FinalDecision; source: string; conflict: string | null }
+  | {
+      stage: "reply";
+      /** Who wrote the customer-facing reply. The decision itself is unaffected. */
+      by: "ai" | "template";
+      provider?: string;
+      model?: string;
+      /** Why the template was used (AI unavailable, injection suspected, reply rejected, ...). */
+      reason?: string;
+    };
 
 const INJECTION_PREFIX = "injection:";
 
@@ -76,7 +98,12 @@ export function injectionLabels(flags: readonly string[]): string[] {
 export function buildReasoningLog(result: AssessmentResult): ReasoningStep[] {
   const labels = injectionLabels(result.flags);
   const steps: ReasoningStep[] = [
-    { stage: "policy_engine", decision: result.policy.decision, rule: result.policy.rule, reasons: result.policy.reasons },
+    {
+      stage: "policy_engine",
+      decision: result.policy.decision,
+      rule: result.policy.rule,
+      reasons: result.policy.reasons,
+    },
     { stage: "injection_scan", detected: labels.length > 0, labels },
   ];
 
@@ -209,14 +236,62 @@ export async function getCustomerOrders(prisma: Db, customerId: number) {
 
 const OPEN_STATUSES: RefundStatus[] = ["PENDING", "ESCALATED"];
 
+const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+/**
+ * The customer-facing reply: the rule-based template, optionally rewritten by
+ * the AI assistant in a warmer tone. The template is used whenever the AI is
+ * unavailable, the customer's text looked like an injection attempt, or the
+ * AI's reply failed validation.
+ */
+async function customerReply(
+  deps: ServiceDeps,
+  result: AssessmentResult,
+  facts: {
+    customerName: string;
+    order: Parameters<typeof customerMessage>[0]["order"];
+    request: Parameters<typeof customerMessage>[0]["request"] & { description: string | null };
+    asOf: Date;
+  },
+): Promise<{ text: string; step: ReasoningStep }> {
+  const template = customerMessage({
+    decision: result.decision,
+    rule: result.policy.rule,
+    order: facts.order,
+    request: facts.request,
+    now: facts.asOf,
+  });
+  const templated = (reason: string): { text: string; step: ReasoningStep } => ({
+    text: template,
+    step: { stage: "reply", by: "template", reason },
+  });
+
+  if (!deps.assistant) return templated("No AI assistant configured");
+  if (result.source === "injection_guard" || injectionLabels(result.flags).length > 0) {
+    return templated("Possible prompt injection; AI not used for the reply");
+  }
+
+  const outcome = await deps.assistant.writeReply({
+    firstName: facts.customerName.split(/\s+/)[0] ?? facts.customerName,
+    productName: facts.order.productName,
+    decision: result.decision,
+    approvedMessage: template,
+    amountText: result.decision === "approved" ? money(facts.request.amountCents) : undefined,
+    customerMessage: facts.request.description,
+  });
+  if ("error" in outcome) return templated(outcome.error);
+  return {
+    text: outcome.ok,
+    step: { stage: "reply", by: "ai", provider: deps.assistant.providerName, model: deps.assistant.model },
+  };
+}
+
 /** Decision columns written for a new or re-run request. */
 function decisionData(
   result: AssessmentResult,
   facts: {
-    order: Parameters<typeof customerMessage>[0]["order"];
-    request: Parameters<typeof customerMessage>[0]["request"];
-    asOf: Date;
     decidedAt: Date;
+    reply: { text: string; step: ReasoningStep };
     extraSteps?: ReasoningStep[];
   },
 ) {
@@ -224,17 +299,15 @@ function decisionData(
     status: STATUS[result.decision],
     resolvedAt: result.decision === "escalated" ? null : facts.decidedAt,
     decisionNotes: decisionSummary(result),
-    customerMessage: customerMessage({
-      decision: result.decision,
-      rule: result.policy.rule,
-      order: facts.order,
-      request: facts.request,
-      now: facts.asOf,
-    }),
+    customerMessage: facts.reply.text,
     decisionSource: result.source,
     injectionDetected: injectionLabels(result.flags).length > 0,
     flags: result.flags,
-    reasoningLog: [...(facts.extraSteps ?? []), ...buildReasoningLog(result)] as unknown as Prisma.InputJsonValue,
+    reasoningLog: [
+      ...(facts.extraSteps ?? []),
+      ...buildReasoningLog(result),
+      facts.reply.step,
+    ] as unknown as Prisma.InputJsonValue,
   } satisfies Prisma.RefundRequestUpdateInput;
 }
 
@@ -277,6 +350,8 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
     now,
   });
 
+  const reply = await customerReply(deps, result, { customerName: customer.name, order, request, asOf: now });
+
   const created = await prisma.$transaction(async (tx) => {
     const row = await tx.refundRequest.create({
       data: {
@@ -286,7 +361,7 @@ export async function submitRefundRequest(deps: ServiceDeps, input: SubmitRefund
         description: request.description,
         amountCents: request.amountCents,
         requestedAt: now,
-        ...decisionData(result, { order, request, asOf: now, decidedAt: now }),
+        ...decisionData(result, { decidedAt: now, reply }),
       },
     });
     if (result.decision === "approved") {
@@ -312,7 +387,9 @@ export async function rerunRefundRequest(deps: ServiceDeps, id: number) {
   const existing = await prisma.refundRequest.findUnique({ where: { id }, include: { customer: true, order: true } });
   if (!existing) throw notFound(`Refund request ${id} not found`);
   if (!OPEN_STATUSES.includes(existing.status)) {
-    throw conflict(`Refund request ${id} is ${existing.status.toLowerCase()}; only pending or escalated requests can be re-run`);
+    throw conflict(
+      `Refund request ${id} is ${existing.status.toLowerCase()}; only pending or escalated requests can be re-run`,
+    );
   }
 
   // Includes this request itself, at its original time.
@@ -346,11 +423,13 @@ export async function rerunRefundRequest(deps: ServiceDeps, id: number) {
     previousSource: existing.decisionSource,
   };
 
+  const reply = await customerReply(deps, result, { customerName: customer.name, order, request, asOf });
+
   await prisma.$transaction(async (tx) => {
     // Only update if still open, so two staff re-running at once can't both decide it.
     const { count } = await tx.refundRequest.updateMany({
       where: { id, status: { in: OPEN_STATUSES } },
-      data: decisionData(result, { order, request, asOf, decidedAt, extraSteps: [rerunStep] }),
+      data: decisionData(result, { decidedAt, reply, extraSteps: [rerunStep] }),
     });
     if (count === 0) throw conflict(`Refund request ${id} was decided by someone else in the meantime`);
     if (result.decision === "approved") {

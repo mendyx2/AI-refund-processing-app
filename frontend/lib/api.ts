@@ -45,6 +45,16 @@ export interface RefundResult {
   reason: RefundReason;
   amountCents: number;
   customerMessage: string | null;
+  /** Includes a final "reply" step saying whether the AI or the template wrote customerMessage. */
+  reasoningLog?: ReasoningStep[] | null;
+}
+
+/** The AI's guess at the reason for free text; the customer confirms it before sending. */
+export interface ReasonSuggestion {
+  reason: RefundReason;
+  label: string;
+  summary: string;
+  confidence: number;
 }
 
 /** One step of the stored decision trace (backend/src/services/refundService.ts). */
@@ -68,7 +78,8 @@ export type ReasoningStep =
       flags?: string[];
       error?: string;
     }
-  | { stage: "final"; decision: "approved" | "denied" | "escalated"; source: string; conflict: string | null };
+  | { stage: "final"; decision: "approved" | "denied" | "escalated"; source: string; conflict: string | null }
+  | { stage: "reply"; by: "ai" | "template"; provider?: string; model?: string; reason?: string };
 
 export type DecisionSource = "policy_engine" | "injection_guard" | "ai_assisted" | "ai_unavailable";
 
@@ -178,6 +189,15 @@ export const api = {
 
   /** The signed-in customer's profile and orders. */
   me: (token: string, signal?: AbortSignal) => request<CustomerOrders>("/me", { signal, headers: auth(token) }),
+
+  /** AI suggestion for free text; null when unsure/unavailable (the chat then shows the reason list). */
+  suggestReason: (token: string, body: { orderId: number; message: string }) =>
+    request<{ suggestion: ReasonSuggestion | null }>("/me/suggest-reason", {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify(body),
+      timeoutMs: 60_000,
+    }),
 
   /** May consult the AI model, so it gets a longer timeout than the lookups. */
   submitRefundRequest: (token: string, body: NewRefundRequest) =>

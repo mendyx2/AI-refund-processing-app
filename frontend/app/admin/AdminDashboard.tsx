@@ -742,6 +742,26 @@ function TraceStep({ step }: { step: ReasoningStep }) {
           )}
         </div>
       );
+    case "reply":
+      return (
+        <div>
+          <StepTitle>
+            Customer reply:{" "}
+            {step.by === "ai" ? (
+              <b>written by {aiLabel({ provider: step.provider, model: step.model ?? "" })}</b>
+            ) : (
+              <span className="text-slate-600">standard template</span>
+            )}
+          </StepTitle>
+          <p className="mt-1 text-slate-600">
+            {step.by === "ai"
+              ? "The AI only reworded the approved explanation; it passed checks for keeping the decision and facts."
+              : step.reason
+                ? `AI not used: ${AI_ERRORS[step.reason]?.short ?? step.reason.replace(/_/g, " ")}.`
+                : null}
+          </p>
+        </div>
+      );
     case "final":
       return (
         <div>

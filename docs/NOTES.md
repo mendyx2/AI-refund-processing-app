@@ -2,6 +2,30 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Customer-visible AI: reason suggestion (A) + reply writing (B)
+
+- **Why:** the AI worked only behind the scenes, so a reviewer playing the
+  customer couldn't see it.
+- **A** (`POST /me/suggest-reason`, `CustomerAssistant.suggestReason`):
+  - suggests a reason code for free text, only at confidence ≥ 0.6;
+  - the chat asks the customer to confirm (Yes / No, let me choose), and
+    nothing is sent until they do;
+  - injection-like text is never sent to the model.
+- **B** (`CustomerAssistant.writeReply`, called in `refundService.customerReply`):
+  - rewrites the rule-based template warmly; `replyProblem` rejects length
+    problems, internal terms, contradictions of the decision, a missing
+    amount on approvals, and markup;
+  - on any problem the template is used, and injection-flagged requests
+    always get the template;
+  - the trace gains a final `reply` step, `{ by: "ai" | "template", reason? }`.
+- **Both reuse the provider adapters** (`AssessmentProvider.assess` with their
+  own tool schemas), so they work with any configured provider.
+- **Cost:** up to two more calls per request (suggestion + reply). With
+  rate-limited free models this means more 429s, which fall back silently.
+- **Tested end to end** against a local OpenAI-compatible mock server
+  through the real adapter (browser run: suggestion → Yes → AI reply;
+  No → pick reason; vague text → list).
+
 ## Help center redesign + customer sign-in
 
 - **Feedback:** the customer page looked plain. It listed every customer in a
