@@ -82,8 +82,58 @@ function flagStyle(flag: string): { label: string; cls: string } {
   }
   if (flag === "suspicious_pattern") return { label: "suspicious pattern", cls: "bg-amber-100 text-amber-900" };
   if (flag === "conflicting_request") return { label: "conflicting request", cls: "bg-amber-100 text-amber-900" };
-  if (flag.startsWith("ai_")) return { label: humanize(flag), cls: "bg-slate-100 text-slate-700" };
+  if (flag.startsWith("ai_")) {
+    return { label: AI_ERRORS[flag]?.short ?? humanize(flag), cls: "bg-slate-100 text-slate-700" };
+  }
   return { label: humanize(flag), cls: "bg-sky-100 text-sky-800" }; // flags raised by the AI model
+}
+
+/** What each AI failure code means and what staff can do about it. */
+const AI_ERRORS: Record<string, { short: string; explain: string }> = {
+  ai_api_error_429: {
+    short: "AI rate-limited",
+    explain:
+      "The AI provider rate-limited this request (HTTP 429): too many requests in a short time. Free models " +
+      "allow only a few requests per minute and per day. Wait a minute and press Re-run decision, or switch to " +
+      "a model or provider with higher limits (see README).",
+  },
+  ai_api_error_401: {
+    short: "AI key rejected",
+    explain: "The AI provider rejected the API key. Check the key in .env.",
+  },
+  ai_api_error_403: {
+    short: "AI access denied",
+    explain: "The AI provider refused access (HTTP 403). Check the key's permissions or network restrictions.",
+  },
+  ai_api_error_404: {
+    short: "AI model not found",
+    explain: "The configured model wasn't found (HTTP 404). Check AI_MODEL matches the provider's model id.",
+  },
+  ai_api_error_network: {
+    short: "AI unreachable",
+    explain: "The AI provider couldn't be reached. Check the internet connection, then Re-run.",
+  },
+  ai_client_error: { short: "AI client error", explain: "The AI request failed before reaching the provider." },
+  ai_no_assessment: {
+    short: "AI gave no assessment",
+    explain:
+      "The model replied without using the required assessment tool. Small or free models sometimes do this; " +
+      "a stronger model is more reliable.",
+  },
+  ai_invalid_assessment: {
+    short: "AI answer invalid",
+    explain: "The model's answer didn't match the required format, so it was not used.",
+  },
+  ai_refused: { short: "AI declined", explain: "The model declined to assess this request." },
+  ai_truncated: { short: "AI answer cut off", explain: "The model's answer was cut off before it finished." },
+  ai_not_configured: { short: "AI not configured", explain: "No AI provider is configured (no API key set)." },
+};
+
+function aiErrorText(code: string | undefined): string {
+  if (!code) return "The AI check could not run.";
+  if (AI_ERRORS[code]) return AI_ERRORS[code].explain;
+  if (/^ai_api_error_5\d\d$/.test(code)) return "The AI provider had a temporary server error. Re-run later.";
+  return `The AI check could not run (${code}).`;
 }
 
 /** Injection, suspicion, and conflict signals: the ones worth a reviewer's attention first. */
@@ -661,9 +711,10 @@ function TraceStep({ step }: { step: ReasoningStep }) {
               {step.mode === "consistency_check" ? " consistency check" : ""}:{" "}
               <b className="text-slate-700">unavailable</b>
             </StepTitle>
-            <p className="mt-1 text-slate-600">
-              {step.error === "ai_not_configured" ? "No AI provider configured" : `Check could not run (${step.error})`}
-              . Clear-cut approvals and denials keep the rules&apos; decision; other requests go to a human.
+            <p className="mt-1 text-slate-600">{aiErrorText(step.error)}</p>
+            <p className="mt-1 text-xs text-slate-500">
+              While the AI is unavailable, clear-cut approvals and denials keep the rules&apos; decision; other requests
+              go to a human.
             </p>
           </div>
         );

@@ -43,7 +43,7 @@ docker compose up --build   # the legacy `docker-compose up --build` should also
 The services start in order:
 
 1. **`db-seed`** (one-shot): creates the SQLite schema on the `sqlite-data`
-   volume and loads demo data (15 customers, 31 orders, 24 refund requests)
+   volume and loads demo data (15 customers, 37 orders, 24 refund requests)
    **only if the database is empty**, then exits.
 2. **`backend`**: the Express API. Starts after the seed succeeds; it has a
    health check.
@@ -69,6 +69,15 @@ AI_MODEL=<a model on that service that supports tool calling>
 If a default model isn't available to your account, set `AI_MODEL`. A wrong
 model or key shows up on the admin page as an `ai_api_error_*` flag on
 escalated requests; nothing breaks.
+
+**`ai_api_error_429` (shown as "AI rate-limited" on `/admin`)** means the
+provider is refusing requests because a rate limit was hit. Free models,
+e.g. OpenRouter's `:free` models, allow only a few requests per minute and a
+small number per day. The app handles it safely: the request is decided by
+the rules alone, or sent to a human. To fix it:
+- wait a minute, then press **Re-run decision** on `/admin`; or
+- use a key with higher limits: Gemini's free tier (`GEMINI_API_KEY`), paid
+  OpenRouter credits, or any paid model.
 
 Data persists across restarts. Run `docker compose down -v` to start over,
 and after changing the Prisma schema.
@@ -124,7 +133,14 @@ On **`/admin`**, press **Re-run decision** on these seeded pending requests:
 - Ethan Kim's speaker → escalated as a conflicting request (needs an API key).
 
 Every customer's email is `firstname.lastname@example.com`. Order numbers run
-`ORD-10001`–`ORD-10031` (see `backend/prisma/seedData.ts`).
+`ORD-10001`–`ORD-10037` (see `backend/prisma/seedData.ts`).
+
+Some orders already have a refund request under review (seeded, for the staff
+dashboard). Only one open request per order is allowed, so clicking one of
+those orders explains that it's already being reviewed. Emma, Liam, Noah, Mia,
+Benjamin and Harper each also have a fresh, recently delivered order
+(`ORD-10032`–`ORD-10037`) with no refund history, so you can always make a new
+request.
 
 ---
 
