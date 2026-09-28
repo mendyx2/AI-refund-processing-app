@@ -2,6 +2,36 @@
 
 Decisions and open questions to fold into the real docs. Newest first.
 
+## Help center redesign + customer sign-in
+
+- **Feedback:** the customer page looked plain. It listed every customer in a
+  dropdown (a real privacy problem, and not how a support site works), and
+  Send stayed disabled after picking a quick reply.
+- **Sign-in = guest order lookup** (`POST /auth/sign-in`: email + order
+  number):
+  - issues an HMAC-signed token (`backend/src/auth.ts`, no dependency) with a
+    2-hour TTL;
+  - gives one generic 401 for any mismatch, so the form can't enumerate
+    emails;
+  - is rate-limited per IP (10 per 15 min, in memory).
+- **Customer endpoints need the token:** `GET /me`, `POST /refund-requests`.
+  The customer id comes from the token, and a `customerId` in the body is
+  rejected, which closes the "API trusts the browser's customerId" gap.
+  `GET /customers` and `GET /customers/:id/orders` are removed.
+- **`AUTH_SECRET`** is optional; a random per-process secret means sessions
+  end on restart.
+- **Send fix:** a quick reply alone is enough to send; details are optional.
+  The message defaults to the reason's label.
+- **UI:**
+  - `/` redirects to `/support` (config-level redirect; an in-page
+    `redirect()` on a static page returned a 307 with no Location header);
+  - branded sign-in with the policy at a glance, form first on phones;
+  - order cards with category icons and refund state;
+  - guided chat with quick-reply chips and decision cards;
+  - staff dashboard with a header and clickable stat tiles that filter the
+    table.
+- Demo credentials live in the README, not in the UI.
+
 ## Any AI provider (`backend/src/ai/`)
 
 - **Why:** reviewers may only have an OpenAI or Gemini key, and the app
@@ -123,9 +153,8 @@ Decisions and open questions to fold into the real docs. Newest first.
 
 ## Customer support page (`frontend/app/support`)
 
-- **"Login" is a dropdown** fed by `GET /customers`. There's no auth, and the
-  API trusts the `customerId` it is sent. Real auth must replace this before
-  any real use, and so must the open admin endpoints.
+- ~~**"Login" is a dropdown** fed by `GET /customers`.~~ Replaced by email +
+  order-number sign-in (see "Help center redesign + customer sign-in").
 - **The customer sees `customerMessage`, never internal notes.** It's written
   by `backend/src/services/customerMessage.ts` from the deciding policy rule
   (`PolicyEvaluation.rule`) and stored on the request. Escalations all get one

@@ -1,4 +1,5 @@
 import { createProvider, describeAiConfig, resolveAiConfig } from "./ai/config";
+import { resolveAuthSecret } from "./auth";
 import { RefundAiLayer } from "./aiLayer";
 import { createApp } from "./app";
 import { createPrisma } from "./db";
@@ -17,12 +18,18 @@ if (aiConfig.provider === "none") {
   console.log(`AI provider: ${ai.provider}, model: ${ai.model}`);
 }
 
+const auth = resolveAuthSecret(process.env);
+if (auth.ephemeral) {
+  console.log("AUTH_SECRET not set: using a random secret, so customer sessions end when the backend restarts.");
+}
+
 const prisma = createPrisma();
 const app = createApp({
   prisma,
   assessor: new RefundAiLayer({ provider: createProvider(aiConfig) }),
   corsOrigins,
   ai,
+  authSecret: auth.secret,
 });
 
 const server = app.listen(port, () => {

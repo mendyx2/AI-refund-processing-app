@@ -167,8 +167,18 @@ export async function listRefundRequests(prisma: Db, filter: { status?: RefundSt
   });
 }
 
-export async function listCustomers(prisma: Db) {
-  return prisma.customer.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, email: true } });
+/**
+ * Guest order lookup: the customer whose email matches AND who owns an order
+ * with this number, or null. Case- and whitespace-insensitive. Callers must
+ * not reveal which half failed.
+ */
+export async function findCustomerForSignIn(prisma: Db, email: string, orderNumber: string) {
+  const order = await prisma.order.findUnique({
+    where: { orderNumber: orderNumber.trim().toUpperCase() },
+    select: { customer: { select: { id: true, name: true, email: true } } },
+  });
+  if (!order || order.customer.email.toLowerCase() !== email.trim().toLowerCase()) return null;
+  return order.customer;
 }
 
 export async function getCustomerOrders(prisma: Db, customerId: number) {

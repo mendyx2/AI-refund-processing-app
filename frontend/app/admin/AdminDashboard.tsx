@@ -12,6 +12,19 @@ import {
   type Health,
   type RefundStatus,
 } from "@/lib/api";
+import {
+  Bot,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Hourglass,
+  Inbox,
+  RefreshCw,
+  ShieldAlert,
+  type LucideIcon,
+} from "lucide-react";
+
+import { Brand } from "@/components/ui";
 import { dateTime, money } from "@/lib/format";
 
 // ---------------------------------------------------------------------------
@@ -25,12 +38,18 @@ const STATUS: Record<RefundStatus, { label: string; cls: string }> = {
   PENDING: { label: "Pending", cls: "bg-slate-100 text-slate-700" },
 };
 
-const FILTERS: { value: RefundStatus | "ALL"; label: string }[] = [
-  { value: "ALL", label: "All" },
-  { value: "PENDING", label: "Pending" },
-  { value: "APPROVED", label: "Approved" },
-  { value: "DENIED", label: "Denied" },
-  { value: "ESCALATED", label: "Escalated" },
+type Tile =
+  | { kind: "status"; value: RefundStatus | "ALL"; label: string; icon: LucideIcon; chip: string }
+  | { kind: "risk"; label: string; icon: LucideIcon; chip: string };
+
+/** Summary tiles; each one filters the table. Status colors always come with an icon + label. */
+const TILES: Tile[] = [
+  { kind: "status", value: "ALL", label: "All requests", icon: Inbox, chip: "bg-slate-100 text-slate-600" },
+  { kind: "status", value: "PENDING", label: "Awaiting decision", icon: Clock, chip: "bg-slate-100 text-slate-600" },
+  { kind: "status", value: "APPROVED", label: "Approved", icon: CircleCheck, chip: "bg-emerald-50 text-emerald-600" },
+  { kind: "status", value: "DENIED", label: "Denied", icon: CircleX, chip: "bg-rose-50 text-rose-600" },
+  { kind: "status", value: "ESCALATED", label: "Escalated", icon: Hourglass, chip: "bg-amber-50 text-amber-600" },
+  { kind: "risk", label: "Risk flags", icon: ShieldAlert, chip: "bg-rose-50 text-rose-600" },
 ];
 
 const SOURCE: Record<DecisionSource, string> = {
@@ -191,6 +210,8 @@ export default function AdminDashboard() {
     return c;
   }, [rows]);
 
+  const riskCount = useMemo(() => (rows ?? []).filter((r) => (r.flags ?? []).some(isRiskFlag)).length, [rows]);
+
   const visible = useMemo(
     () =>
       (rows ?? []).filter(
@@ -202,190 +223,211 @@ export default function AdminDashboard() {
   );
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 sm:py-10">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Refund requests</h1>
-          <p className="text-sm text-slate-600">Every request with its decision and how it was reached.</p>
-          {ai && (
-            <p className="mt-1 text-xs">
-              {ai.configured ? (
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">
-                  AI advisor: {PROVIDER_LABEL[ai.provider] ?? ai.provider} · {ai.model}
-                </span>
-              ) : (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-900">
-                  AI advisor not configured: requests that need judgment are escalated to a human
-                </span>
-              )}
-            </p>
-          )}
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-10 border-b border-slate-200/70 bg-white/80 backdrop-blur">
+        <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+          <Brand subtitle="Staff dashboard" />
+          <div className="flex items-center gap-2">
+            {ai && (
+              <span
+                className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ring-1 ring-inset sm:inline-flex ${
+                  ai.configured
+                    ? "bg-slate-50 text-slate-700 ring-slate-200"
+                    : "bg-amber-50 text-amber-900 ring-amber-200"
+                }`}
+                title={
+                  ai.configured
+                    ? "LLM consulted for judgment calls"
+                    : "Requests needing judgment are escalated to a human"
+                }
+              >
+                <Bot className="h-3.5 w-3.5" aria-hidden />
+                {ai.configured
+                  ? `AI advisor: ${PROVIDER_LABEL[ai.provider] ?? ai.provider} · ${ai.model}`
+                  : "AI advisor not configured"}
+              </span>
+            )}
+            <button
+              onClick={() => void load()}
+              disabled={refreshing}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} aria-hidden />
+              {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => void load()}
-          disabled={refreshing}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
-        >
-          {refreshing ? "Refreshing…" : "Refresh"}
-        </button>
       </header>
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div role="group" aria-label="Filter by decision" className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1">
-          {FILTERS.map((f) => (
-            <button
-              key={f.value}
-              onClick={() => {
-                setFilter(f.value);
-                setPinned(new Set());
-              }}
-              aria-pressed={filter === f.value}
-              className={`rounded-md px-3 py-1 text-sm ${
-                filter === f.value ? "bg-white font-medium shadow-sm" : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              {f.label}
-              {rows && <span className="ml-1.5 text-xs tabular-nums text-slate-500">{counts[f.value] ?? 0}</span>}
+      <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 sm:text-3xl">Refund requests</h1>
+          <p className="mt-1 text-slate-600">Every request, its decision, and exactly how it was reached.</p>
+        </div>
+
+        {/* Stat tiles double as the status filter */}
+        <div
+          role="group"
+          aria-label="Filter by decision"
+          className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
+        >
+          {TILES.map((t) => {
+            const active = t.kind === "status" ? filter === t.value && !flaggedOnly : flaggedOnly;
+            const count = t.kind === "status" ? (counts[t.value] ?? 0) : riskCount;
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.label}
+                onClick={() => {
+                  if (t.kind === "status") {
+                    setFilter(t.value);
+                    setFlaggedOnly(false);
+                  } else {
+                    setFlaggedOnly((f) => !f);
+                  }
+                  setPinned(new Set());
+                }}
+                aria-pressed={active}
+                className={`rounded-2xl bg-white p-4 text-left shadow-sm ring-1 transition hover:shadow-md ${
+                  active ? "ring-2 ring-indigo-500" : "ring-slate-200 hover:ring-slate-300"
+                }`}
+              >
+                <span className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-slate-500">{t.label}</span>
+                  <span className={`grid h-7 w-7 place-items-center rounded-lg ${t.chip}`}>
+                    <Icon className="h-4 w-4" aria-hidden />
+                  </span>
+                </span>
+                <span className="mt-2 block text-2xl font-semibold text-slate-900">{rows ? count : "–"}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {listError && (
+          <div role="alert" className="mb-4 rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">
+            {listError}{" "}
+            <button onClick={() => void load()} className="font-medium underline">
+              Try again
             </button>
-          ))}
-        </div>
-        <label className="flex items-center gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            checked={flaggedOnly}
-            onChange={(e) => {
-              setFlaggedOnly(e.target.checked);
-              setPinned(new Set());
-            }}
-            className="h-4 w-4 rounded border-slate-300"
-          />
-          Only risk flags (injection, suspicious, conflicting)
-        </label>
-      </div>
+          </div>
+        )}
 
-      {listError && (
-        <div role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-          {listError}{" "}
-          <button onClick={() => void load()} className="font-medium underline">
-            Try again
-          </button>
-        </div>
-      )}
-
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-        <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-            <tr>
-              <th scope="col" className="w-10 px-3 py-2">
-                <span className="sr-only">Expand</span>
-              </th>
-              <th scope="col" className="px-3 py-2 font-medium">
-                Customer
-              </th>
-              <th scope="col" className="px-3 py-2 font-medium">
-                Order
-              </th>
-              <th scope="col" className="px-3 py-2 font-medium">
-                Decision
-              </th>
-              <th scope="col" className="px-3 py-2 font-medium">
-                Submitted
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows === null && !listError ? (
-              [0, 1, 2, 3, 4].map((i) => (
-                <tr key={i}>
-                  <td colSpan={5} className="px-3 py-3">
-                    <div className="h-5 animate-pulse rounded bg-slate-100" />
+        <div className="overflow-x-auto rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="border-b border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th scope="col" className="w-10 px-3 py-2">
+                  <span className="sr-only">Expand</span>
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Customer
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Order
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Decision
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
+                  Submitted
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows === null && !listError ? (
+                [0, 1, 2, 3, 4].map((i) => (
+                  <tr key={i}>
+                    <td colSpan={5} className="px-3 py-3">
+                      <div className="h-5 animate-pulse rounded bg-slate-100" />
+                    </td>
+                  </tr>
+                ))
+              ) : visible.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-3 py-10 text-center text-slate-500">
+                    {rows?.length ? "No requests match this filter." : "No refund requests yet."}
                   </td>
                 </tr>
-              ))
-            ) : visible.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-3 py-10 text-center text-slate-500">
-                  {rows?.length ? "No requests match this filter." : "No refund requests yet."}
-                </td>
-              </tr>
-            ) : (
-              visible.map((row) => {
-                const open = expanded.has(row.id);
-                const riskFlags = (row.flags ?? []).filter(isRiskFlag);
-                return (
-                  <Fragment key={row.id}>
-                    <tr
-                      onClick={() => toggle(row.id)}
-                      className={`cursor-pointer align-top hover:bg-slate-50 ${open ? "bg-slate-50" : ""}`}
-                    >
-                      <td className="px-3 py-3">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggle(row.id);
-                          }}
-                          aria-expanded={open}
-                          aria-controls={`detail-${row.id}`}
-                          aria-label={`${open ? "Collapse" : "Expand"} request #${row.id}`}
-                          className="grid h-6 w-6 place-items-center rounded text-slate-500 hover:bg-slate-200"
-                        >
-                          <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
-                        </button>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="font-medium">{row.customer.name}</div>
-                        <div className="text-xs text-slate-500">{row.customer.email}</div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div>{row.order.productName}</div>
-                        <div className="text-xs text-slate-500">
-                          {row.order.orderNumber} · {money(row.amountCents)}
-                          {row.amountCents !== row.order.totalCents && ` of ${money(row.order.totalCents)}`}
-                        </div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS[row.status].cls}`}>
-                          {STATUS[row.status].label}
-                        </span>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {row.decisionSource
-                            ? SOURCE[row.decisionSource]
-                            : row.status === "PENDING"
-                              ? "Awaiting decision"
-                              : "Historical record"}
-                        </div>
-                        {riskFlags.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {riskFlags.map((f) => (
-                              <FlagChip key={f} flag={f} />
-                            ))}
+              ) : (
+                visible.map((row) => {
+                  const open = expanded.has(row.id);
+                  const riskFlags = (row.flags ?? []).filter(isRiskFlag);
+                  return (
+                    <Fragment key={row.id}>
+                      <tr
+                        onClick={() => toggle(row.id)}
+                        className={`cursor-pointer align-top hover:bg-slate-50 ${open ? "bg-slate-50" : ""}`}
+                      >
+                        <td className="px-3 py-3">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggle(row.id);
+                            }}
+                            aria-expanded={open}
+                            aria-controls={`detail-${row.id}`}
+                            aria-label={`${open ? "Collapse" : "Expand"} request #${row.id}`}
+                            className="grid h-6 w-6 place-items-center rounded text-slate-500 hover:bg-slate-200"
+                          >
+                            <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
+                          </button>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="font-medium">{row.customer.name}</div>
+                          <div className="text-xs text-slate-500">{row.customer.email}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div>{row.order.productName}</div>
+                          <div className="text-xs text-slate-500">
+                            {row.order.orderNumber} · {money(row.amountCents)}
+                            {row.amountCents !== row.order.totalCents && ` of ${money(row.order.totalCents)}`}
                           </div>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-3 text-slate-600">
-                        <div>{dateTime(row.requestedAt)}</div>
-                        <div className="text-xs text-slate-400">#{row.id}</div>
-                      </td>
-                    </tr>
-                    {open && (
-                      <tr id={`detail-${row.id}`} className="bg-slate-50">
-                        <td colSpan={5} className="px-3 pb-5 pt-1 sm:pl-12">
-                          <DetailPanel
-                            detail={details[row.id]}
-                            onRetry={() => void loadDetail(row.id)}
-                            rerun={rerunState[row.id]}
-                            onRerun={() => void rerun(row.id)}
-                          />
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${STATUS[row.status].cls}`}>
+                            {STATUS[row.status].label}
+                          </span>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {row.decisionSource
+                              ? SOURCE[row.decisionSource]
+                              : row.status === "PENDING"
+                                ? "Awaiting decision"
+                                : "Historical record"}
+                          </div>
+                          {riskFlags.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {riskFlags.map((f) => (
+                                <FlagChip key={f} flag={f} />
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-600">
+                          <div>{dateTime(row.requestedAt)}</div>
+                          <div className="text-xs text-slate-400">#{row.id}</div>
                         </td>
                       </tr>
-                    )}
-                  </Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                      {open && (
+                        <tr id={`detail-${row.id}`} className="bg-slate-50">
+                          <td colSpan={5} className="px-3 pb-5 pt-1 sm:pl-12">
+                            <DetailPanel
+                              detail={details[row.id]}
+                              onRetry={() => void loadDetail(row.id)}
+                              rerun={rerunState[row.id]}
+                              onRerun={() => void rerun(row.id)}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </main>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { ASSESSMENT_TOOL_NAME, RefundAiLayer, type MessagesClient, type RefundAssessment } from "../aiLayer";
 import { createApp } from "../app";
+import { signToken } from "../auth";
 import { createPrisma, type Db } from "../db";
 import type { RefundAssessor } from "../services/refundService";
 
@@ -45,7 +46,7 @@ beforeAll(() => {
     logger: { warn: () => {} },
     policyText: "TEST POLICY",
   });
-  app = createApp({ prisma, assessor });
+  app = createApp({ prisma, assessor, authSecret: SECRET });
 }, 60_000);
 
 afterAll(async () => {
@@ -86,10 +87,15 @@ function createOrder(customerId: number, overrides: Record<string, unknown> = {}
   });
 }
 
-const submit = (body: unknown) =>
-  request(app)
-    .post("/refund-requests")
-    .send(body as object);
+const SECRET = "test-secret-test-secret";
+const bearer = (customerId: number) => `Bearer ${signToken(customerId, SECRET)}`;
+
+/** Submits as the signed-in customer named by `customerId` (which is sent as a token, not in the body). */
+const submit = ({ customerId, ...body }: { customerId?: unknown } & Record<string, unknown>) => {
+  const req = request(app).post("/refund-requests");
+  if (typeof customerId === "number") req.set("authorization", bearer(customerId));
+  return req.send(body);
+};
 
 describe("POST /refund-requests", () => {
   it("approves a clear-cut request Claude confirms, marks the order refunded, and stores the trace", async () => {
@@ -301,7 +307,7 @@ describe("POST /refund-requests", () => {
   it.each([
     ["missing message", { customerId: 1, orderId: 1 }, "message"],
     ["blank message", { customerId: 1, orderId: 1, message: "   " }, "message"],
-    ["string id", { customerId: "1", orderId: 1, message: "x" }, "customerId"],
+    ["string id", { customerId: 1, orderId: "1", message: "x" }, "orderId"],
     ["unknown reason", { customerId: 1, orderId: 1, message: "x", reason: "BORED" }, "reason"],
     ["negative amount", { customerId: 1, orderId: 1, message: "x", amountCents: -5 }, "amountCents"],
     ["unknown field", { customerId: 1, orderId: 1, message: "x", status: "APPROVED" }, ""],
@@ -326,9 +332,10 @@ describe("POST /refund-requests", () => {
       },
     };
     const order = await createOrder(alice.id);
-    const res = await request(createApp({ prisma, assessor: failing }))
+    const res = await request(createApp({ prisma, assessor: failing, authSecret: SECRET }))
       .post("/refund-requests")
-      .send({ customerId: alice.id, orderId: order.id, message: "x" });
+      .set("authorization", bearer(alice.id))
+      .send({ orderId: order.id, message: "x" });
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: { code: "internal_error", message: "Internal server error" } });
@@ -497,19 +504,92 @@ describe("POST /refund-requests/:id/rerun", () => {
   });
 });
 
-describe("GET /customers", () => {
-  it("lists customers by name for the support page's login dropdown", async () => {
-    const res = await request(app).get("/customers");
+describe("customer sign-in and sessions", () => {
+  const signIn = (body: object) => request(app).post("/auth/sign-in").send(body);
+
+  it("signs in with email + an order number, case- and space-insensitive", async () => {
+    const order = await createOrder(alice.id);
+    const res = await signIn({ email: "  ALICE@example.com ", orderNumber: ` ${order.orderNumber.toLowerCase()} ` });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([
-      { id: alice.id, name: "Alice", email: "alice@example.com" },
-      { id: bob.id, name: "Bob", email: "bob@example.com" },
-    ]);
+    expect(res.body.customer).toEqual({ id: alice.id, name: "Alice", email: "alice@example.com" });
+    expect(typeof res.body.token).toBe("string");
+
+    const me = await request(app).get("/me").set("authorization", `Bearer ${res.body.token}`);
+    expect(me.status).toBe(200);
+    expect(me.body).toMatchObject({ id: alice.id, name: "Alice" });
+  });
+
+  it("gives the same 401 for an unknown email and for someone else's order number", async () => {
+    const bobsOrder = await createOrder(bob.id);
+    const wrongOwner = await signIn({ email: "alice@example.com", orderNumber: bobsOrder.orderNumber });
+    const unknown = await signIn({ email: "nobody@example.com", orderNumber: bobsOrder.orderNumber });
+    expect(wrongOwner.status).toBe(401);
+    expect(unknown.status).toBe(401);
+    expect(wrongOwner.body).toEqual(unknown.body);
+    expect(wrongOwner.body).not.toHaveProperty("token");
+  });
+
+  it("validates the sign-in form", async () => {
+    const res = await signIn({ email: "not-an-email", orderNumber: "" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.map((d: { path: string }) => d.path).sort()).toEqual(["email", "orderNumber"]);
+  });
+
+  it("rate-limits repeated sign-in attempts", async () => {
+    const limited = createApp({
+      prisma,
+      assessor: {
+        assessRefundRequest: async () => {
+          throw new Error();
+        },
+      },
+      authSecret: SECRET,
+    });
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      statuses.push(
+        (await request(limited).post("/auth/sign-in").send({ email: "x@example.com", orderNumber: "ORD-0" })).status,
+      );
+    }
+    expect(statuses.slice(0, 10).every((s) => s === 401)).toBe(true);
+    expect(statuses[10]).toBe(429);
+  });
+
+  it("requires a valid session for customer endpoints", async () => {
+    const order = await createOrder(alice.id);
+    expect((await request(app).get("/me")).status).toBe(401);
+    expect((await request(app).get("/me").set("authorization", "Bearer forged.token")).status).toBe(401);
+    expect(
+      (
+        await request(app)
+          .get("/me")
+          .set("authorization", `Bearer ${signToken(alice.id, "a-different-secret-entirely")}`)
+      ).status,
+    ).toBe(401);
+    const expired = signToken(alice.id, SECRET, Date.now() - 3 * 60 * 60 * 1000);
+    expect((await request(app).get("/me").set("authorization", `Bearer ${expired}`)).status).toBe(401);
+
+    const noSession = await request(app).post("/refund-requests").send({ orderId: order.id, message: "x" });
+    expect(noSession.status).toBe(401);
+    expect(noSession.body.error.code).toBe("unauthorized");
+  });
+
+  it("ignores a customerId smuggled into the body: the session decides whose request it is", async () => {
+    const bobsOrder = await createOrder(bob.id);
+    const res = await request(app)
+      .post("/refund-requests")
+      .set("authorization", bearer(alice.id))
+      .send({ customerId: bob.id, orderId: bobsOrder.id, message: "x" });
+    expect(res.status).toBe(400); // unknown key rejected outright
+  });
+
+  it("no longer exposes a public customer list", async () => {
+    expect((await request(app).get("/customers")).status).toBe(404);
   });
 });
 
-describe("GET /customers/:id/orders", () => {
-  it("returns the customer's orders newest first with their refund requests", async () => {
+describe("GET /me", () => {
+  it("returns only the signed-in customer's orders, newest first, with their refund requests", async () => {
     const older = await createOrder(alice.id, { orderedAt: daysAgo(40), productName: "Old" });
     const newer = await createOrder(alice.id, { orderedAt: daysAgo(2), productName: "New" });
     await createOrder(bob.id);
@@ -517,15 +597,15 @@ describe("GET /customers/:id/orders", () => {
       data: { orderId: older.id, customerId: alice.id, reason: "OTHER", amountCents: 1, status: "DENIED" },
     });
 
-    const res = await request(app).get(`/customers/${alice.id}/orders`);
+    const res = await request(app).get("/me").set("authorization", bearer(alice.id));
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: alice.id, name: "Alice" });
     expect(res.body.orders.map((o: { id: number }) => o.id)).toEqual([newer.id, older.id]);
     expect(res.body.orders[1].refundRequests).toEqual([expect.objectContaining({ status: "DENIED" })]);
   });
 
-  it("returns 404 for an unknown customer", async () => {
-    expect((await request(app).get("/customers/99999/orders")).status).toBe(404);
+  it("returns 404 if the session's customer no longer exists", async () => {
+    expect((await request(app).get("/me").set("authorization", bearer(99999))).status).toBe(404);
   });
 });
 
