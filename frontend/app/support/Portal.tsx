@@ -158,7 +158,23 @@ export default function Portal({
   // --- actions --------------------------------------------------------------
 
   function selectOrder(order: Order) {
-    if (submitting || openRequest(order)) return;
+    if (submitting) return;
+    const open = openRequest(order);
+    if (open) {
+      // Only one open request per order: explain instead of silently ignoring the click.
+      setSelectedId(null);
+      setReason(null);
+      setMessages((m) => [
+        ...m,
+        me(`What's happening with my ${order.productName}?`),
+        say(
+          `Your refund request for the ${order.productName} is already with our team (reference #${open.id}, ` +
+            `sent ${date(open.requestedAt)}). We'll email you as soon as there's an update, so there's nothing ` +
+            "more you need to do. You can choose another order in the meantime.",
+        ),
+      ]);
+      return;
+    }
     setSelectedId(order.id);
     setReason(null);
     setDraft("");
@@ -416,15 +432,13 @@ function OrderCard({
   disabled: boolean;
   onSelect: () => void;
 }) {
-  const open = openRequest(order);
   const badge = refundBadge(order);
   return (
     <button
       type="button"
       onClick={onSelect}
-      disabled={disabled || Boolean(open)}
+      disabled={disabled}
       aria-pressed={selected}
-      title={open ? "We're already reviewing a refund request for this order." : undefined}
       className={`group w-full rounded-2xl bg-white p-4 text-left shadow-sm ring-1 transition ${
         selected
           ? "ring-2 ring-indigo-500 shadow-indigo-500/10"

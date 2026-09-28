@@ -19,6 +19,8 @@ export interface SeedRefund {
 }
 
 export interface SeedOrder {
+  /** Fixed order number; otherwise assigned sequentially from ORD-10001. */
+  orderNumber?: string;
   product: string;
   category: string;
   total: number;
@@ -44,6 +46,17 @@ export const customers: SeedCustomer[] = [
     email: "emma.carter@example.com",
     joinedDaysAgo: 420,
     orders: [
+      {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10032",
+        product: "Apple AirTag (4-pack)",
+        category: "Electronics",
+        total: 99.0,
+        status: "DELIVERED",
+        orderedDaysAgo: 6,
+        deliveredDaysAgo: 3,
+      },
       {
         product: "Sony WH-1000XM5 Headphones",
         category: "Electronics",
@@ -77,6 +90,17 @@ export const customers: SeedCustomer[] = [
     email: "liam.nguyen@example.com",
     joinedDaysAgo: 610,
     orders: [
+      {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10033",
+        product: "Logitech MX Master 3S Mouse",
+        category: "Electronics",
+        total: 99.99,
+        status: "DELIVERED",
+        orderedDaysAgo: 9,
+        deliveredDaysAgo: 6,
+      },
       {
         product: 'MacBook Air 13" M3',
         category: "Electronics",
@@ -154,6 +178,17 @@ export const customers: SeedCustomer[] = [
     email: "noah.patel@example.com",
     joinedDaysAgo: 900,
     orders: [
+      {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10034",
+        product: "OXO Good Grips Chef's Knife",
+        category: "Home & Kitchen",
+        total: 49.95,
+        status: "DELIVERED",
+        orderedDaysAgo: 7,
+        deliveredDaysAgo: 4,
+      },
       {
         product: "Vitamix E310 Blender",
         category: "Home & Kitchen",
@@ -426,6 +461,17 @@ export const customers: SeedCustomer[] = [
     joinedDaysAgo: 1100,
     orders: [
       {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10035",
+        product: "Manduka PRO Yoga Mat",
+        category: "Outdoors",
+        total: 88.0,
+        status: "DELIVERED",
+        orderedDaysAgo: 11,
+        deliveredDaysAgo: 8,
+      },
+      {
         product: "Le Creuset Dutch Oven 5.5qt",
         category: "Home & Kitchen",
         total: 419.95,
@@ -572,6 +618,17 @@ export const customers: SeedCustomer[] = [
     joinedDaysAgo: 1300,
     orders: [
       {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10036",
+        product: "Ceramic Planter Set (3)",
+        category: "Home Decor",
+        total: 58.0,
+        status: "DELIVERED",
+        orderedDaysAgo: 8,
+        deliveredDaysAgo: 5,
+      },
+      {
         product: "West Elm Harmony Sofa",
         category: "Furniture",
         total: 2450.0,
@@ -605,6 +662,17 @@ export const customers: SeedCustomer[] = [
     email: "harper.singh@example.com",
     joinedDaysAgo: 60,
     orders: [
+      {
+        // Fresh, eligible order with no refund history, so this demo customer can
+        // always make a new request.
+        orderNumber: "ORD-10037",
+        product: "Silicone Baking Mat Set",
+        category: "Home & Kitchen",
+        total: 24.99,
+        status: "DELIVERED",
+        orderedDaysAgo: 5,
+        deliveredDaysAgo: 2,
+      },
       {
         product: "KitchenAid Artisan Stand Mixer",
         category: "Home & Kitchen",

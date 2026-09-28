@@ -41,7 +41,7 @@ async function main() {
       const totalCents = dollars(o.total);
       await prisma.order.create({
         data: {
-          orderNumber: `ORD-${orderSeq++}`,
+          orderNumber: o.orderNumber ?? `ORD-${orderSeq++}`,
           customerId: customer.id,
           productName: o.product,
           category: o.category,
