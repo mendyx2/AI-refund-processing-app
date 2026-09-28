@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { ASSESSMENT_TOOL_NAME, RefundAiLayer, type MessagesClient, type RefundAssessment } from "../aiLayer";
 import { createApp } from "../app";
+import { signToken } from "../auth";
 import { createPrisma, type Db } from "../db";
 import type { RefundAssessor } from "../services/refundService";
 
@@ -20,12 +21,12 @@ let claudeDown = false;
 const create = vi.fn<MessagesClient["beta"]["messages"]["create"]>(async () => {
   if (claudeDown) throw new Error("Could not resolve authentication method.");
   return {
-  id: "msg_test",
-  type: "message",
-  role: "assistant",
-  model: "claude-opus-5",
-  stop_reason: "tool_use",
-  content: [{ type: "tool_use", id: "toolu_test", name: ASSESSMENT_TOOL_NAME, input: nextAssessment }],
+    id: "msg_test",
+    type: "message",
+    role: "assistant",
+    model: "claude-opus-5",
+    stop_reason: "tool_use",
+    content: [{ type: "tool_use", id: "toolu_test", name: ASSESSMENT_TOOL_NAME, input: nextAssessment }],
   } as unknown as Anthropic.Beta.BetaMessage;
 });
 
@@ -45,7 +46,7 @@ beforeAll(() => {
     logger: { warn: () => {} },
     policyText: "TEST POLICY",
   });
-  app = createApp({ prisma, assessor });
+  app = createApp({ prisma, assessor, authSecret: SECRET });
 }, 60_000);
 
 afterAll(async () => {
@@ -56,7 +57,12 @@ afterAll(async () => {
 beforeEach(async () => {
   create.mockClear();
   claudeDown = false;
-  nextAssessment = { reasoning: "Consistent with a defect.", recommendedDecision: "approved", confidence: 0.95, flags: [] };
+  nextAssessment = {
+    reasoning: "Consistent with a defect.",
+    recommendedDecision: "approved",
+    confidence: 0.95,
+    flags: [],
+  };
   await prisma.refundRequest.deleteMany();
   await prisma.order.deleteMany();
   await prisma.customer.deleteMany();
@@ -81,12 +87,25 @@ function createOrder(customerId: number, overrides: Record<string, unknown> = {}
   });
 }
 
-const submit = (body: unknown) => request(app).post("/refund-requests").send(body as object);
+const SECRET = "test-secret-test-secret";
+const bearer = (customerId: number) => `Bearer ${signToken(customerId, SECRET)}`;
+
+/** Submits as the signed-in customer named by `customerId` (which is sent as a token, not in the body). */
+const submit = ({ customerId, ...body }: { customerId?: unknown } & Record<string, unknown>) => {
+  const req = request(app).post("/refund-requests");
+  if (typeof customerId === "number") req.set("authorization", bearer(customerId));
+  return req.send(body);
+};
 
 describe("POST /refund-requests", () => {
   it("approves a clear-cut request Claude confirms, marks the order refunded, and stores the trace", async () => {
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "Changed my mind", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Changed my mind",
+      reason: "CHANGED_MIND",
+    });
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -105,7 +124,13 @@ describe("POST /refund-requests", () => {
       "ai",
       "final",
     ]);
-    expect(res.body.reasoningLog[2]).toMatchObject({ consulted: true, mode: "assessment", outcome: "assessment" });
+    expect(res.body.reasoningLog[2]).toMatchObject({
+      consulted: true,
+      mode: "assessment",
+      outcome: "assessment",
+      provider: "anthropic",
+      model: "claude-opus-5",
+    });
     expect(res.body.customerMessage).toMatch(/^Good news: your refund of \$80\.00 for the Desk Lamp/);
     expect(create).toHaveBeenCalledOnce();
   });
@@ -118,16 +143,35 @@ describe("POST /refund-requests", () => {
       flags: ["conflicting_request"],
     };
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It arrived broken.", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "It arrived broken.",
+      reason: "CHANGED_MIND",
+    });
 
-    expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted", flags: ["conflicting_request"] });
+    expect(res.body).toMatchObject({
+      status: "ESCALATED",
+      decisionSource: "ai_assisted",
+      flags: ["conflicting_request"],
+    });
     expect(res.body.customerMessage).toMatch(/member of our support team/);
   });
 
   it("escalates a reason-dependent denial Claude marks as conflicting", async () => {
-    nextAssessment = { reasoning: "Describes damage.", recommendedDecision: "escalated", confidence: 0.9, flags: ["conflicting_request"] };
+    nextAssessment = {
+      reasoning: "Describes damage.",
+      recommendedDecision: "escalated",
+      confidence: 0.9,
+      flags: ["conflicting_request"],
+    };
     const order = await createOrder(alice.id, { isFinalSale: true });
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "It came smashed.", reason: "CHANGED_MIND" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "It came smashed.",
+      reason: "CHANGED_MIND",
+    });
 
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_assisted" });
     expect(res.body.reasoningLog[0]).toMatchObject({ stage: "policy_engine", decision: "DENY", rule: "FINAL_SALE" });
@@ -139,17 +183,30 @@ describe("POST /refund-requests", () => {
     const res = await submit({ customerId: alice.id, orderId: order.id, message: "Broke", reason: "DEFECTIVE" });
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ status: "DENIED", decisionSource: "policy_engine", order: { status: "DELIVERED" } });
+    expect(res.body).toMatchObject({
+      status: "DENIED",
+      decisionSource: "policy_engine",
+      order: { status: "DELIVERED" },
+    });
     expect(res.body.decisionNotes).toMatch(/60-day refund window/);
     expect(create).not.toHaveBeenCalled();
   });
 
   it("consults Claude for judgment calls and records its assessment", async () => {
     const order = await createOrder(alice.id);
-    const res = await submit({ customerId: alice.id, orderId: order.id, message: "Switch is broken", reason: "DEFECTIVE" });
+    const res = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Switch is broken",
+      reason: "DEFECTIVE",
+    });
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ status: "APPROVED", decisionSource: "ai_assisted", decisionNotes: "Consistent with a defect." });
+    expect(res.body).toMatchObject({
+      status: "APPROVED",
+      decisionSource: "ai_assisted",
+      decisionNotes: "Consistent with a defect.",
+    });
     expect(res.body.reasoningLog[2]).toMatchObject({
       stage: "ai",
       consulted: true,
@@ -161,7 +218,12 @@ describe("POST /refund-requests", () => {
   });
 
   it("escalates (not denies) when Claude recommends denial", async () => {
-    nextAssessment = { reasoning: "Claim contradicts order.", recommendedDecision: "denied", confidence: 0.9, flags: ["claim_inconsistent_with_order"] };
+    nextAssessment = {
+      reasoning: "Claim contradicts order.",
+      recommendedDecision: "denied",
+      confidence: 0.9,
+      flags: ["claim_inconsistent_with_order"],
+    };
     const order = await createOrder(alice.id);
     const res = await submit({ customerId: alice.id, orderId: order.id, message: "Wrong item", reason: "WRONG_ITEM" });
 
@@ -180,7 +242,11 @@ describe("POST /refund-requests", () => {
 
     expect(res.body).toMatchObject({ status: "ESCALATED", decisionSource: "injection_guard", injectionDetected: true });
     expect(res.body.flags).toContain("injection:ignore_instructions");
-    expect(res.body.reasoningLog[1]).toEqual({ stage: "injection_scan", detected: true, labels: ["ignore_instructions"] });
+    expect(res.body.reasoningLog[1]).toEqual({
+      stage: "injection_scan",
+      detected: true,
+      labels: ["ignore_instructions"],
+    });
     expect(res.body.customerMessage).toMatch(/member of our support team/);
     expect(res.body.customerMessage).not.toMatch(/injection/i);
     expect(create).not.toHaveBeenCalled();
@@ -197,7 +263,14 @@ describe("POST /refund-requests", () => {
     for (const d of [3, 6]) {
       const o = await createOrder(alice.id);
       await prisma.refundRequest.create({
-        data: { orderId: o.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 100, status: "DENIED", requestedAt: daysAgo(d) },
+        data: {
+          orderId: o.id,
+          customerId: alice.id,
+          reason: "CHANGED_MIND",
+          amountCents: 100,
+          status: "DENIED",
+          requestedAt: daysAgo(d),
+        },
       });
     }
     const order = await createOrder(alice.id);
@@ -234,7 +307,7 @@ describe("POST /refund-requests", () => {
   it.each([
     ["missing message", { customerId: 1, orderId: 1 }, "message"],
     ["blank message", { customerId: 1, orderId: 1, message: "   " }, "message"],
-    ["string id", { customerId: "1", orderId: 1, message: "x" }, "customerId"],
+    ["string id", { customerId: 1, orderId: "1", message: "x" }, "orderId"],
     ["unknown reason", { customerId: 1, orderId: 1, message: "x", reason: "BORED" }, "reason"],
     ["negative amount", { customerId: 1, orderId: 1, message: "x", amountCents: -5 }, "amountCents"],
     ["unknown field", { customerId: 1, orderId: 1, message: "x", status: "APPROVED" }, ""],
@@ -253,11 +326,16 @@ describe("POST /refund-requests", () => {
 
   it("returns a generic 500 without leaking internals on unexpected errors", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const failing: RefundAssessor = { assessRefundRequest: async () => { throw new Error("secret internals"); } };
+    const failing: RefundAssessor = {
+      assessRefundRequest: async () => {
+        throw new Error("secret internals");
+      },
+    };
     const order = await createOrder(alice.id);
-    const res = await request(createApp({ prisma, assessor: failing }))
+    const res = await request(createApp({ prisma, assessor: failing, authSecret: SECRET }))
       .post("/refund-requests")
-      .send({ customerId: alice.id, orderId: order.id, message: "x" });
+      .set("authorization", bearer(alice.id))
+      .send({ orderId: order.id, message: "x" });
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: { code: "internal_error", message: "Internal server error" } });
@@ -271,10 +349,24 @@ describe("GET /refund-requests", () => {
     const o1 = await createOrder(alice.id);
     const o2 = await createOrder(bob.id);
     await prisma.refundRequest.create({
-      data: { orderId: o1.id, customerId: alice.id, reason: "OTHER", amountCents: 1, status: "DENIED", requestedAt: daysAgo(5) },
+      data: {
+        orderId: o1.id,
+        customerId: alice.id,
+        reason: "OTHER",
+        amountCents: 1,
+        status: "DENIED",
+        requestedAt: daysAgo(5),
+      },
     });
     await prisma.refundRequest.create({
-      data: { orderId: o2.id, customerId: bob.id, reason: "OTHER", amountCents: 1, status: "PENDING", requestedAt: daysAgo(1) },
+      data: {
+        orderId: o2.id,
+        customerId: bob.id,
+        reason: "OTHER",
+        amountCents: 1,
+        status: "PENDING",
+        requestedAt: daysAgo(1),
+      },
     });
 
     const res = await request(app).get("/refund-requests");
@@ -315,12 +407,23 @@ describe("POST /refund-requests/:id/rerun", () => {
   it("decides a seeded pending request and records the re-run in the trace", async () => {
     const order = await createOrder(alice.id, { deliveredAt: daysAgo(20), orderedAt: daysAgo(24) });
     const seeded = await prisma.refundRequest.create({
-      data: { orderId: order.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 80_00, requestedAt: daysAgo(2) },
+      data: {
+        orderId: order.id,
+        customerId: alice.id,
+        reason: "CHANGED_MIND",
+        amountCents: 80_00,
+        requestedAt: daysAgo(2),
+      },
     });
 
     const res = await rerun(seeded.id);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ id: seeded.id, status: "APPROVED", decisionSource: "ai_assisted", order: { status: "REFUNDED" } });
+    expect(res.body).toMatchObject({
+      id: seeded.id,
+      status: "APPROVED",
+      decisionSource: "ai_assisted",
+      order: { status: "REFUNDED" },
+    });
     expect(res.body.reasoningLog[0]).toMatchObject({
       stage: "rerun",
       previousStatus: "PENDING",
@@ -340,7 +443,13 @@ describe("POST /refund-requests/:id/rerun", () => {
     // Delivered 40 days ago, requested 15 days ago (day 25 of 30): still in window.
     const order = await createOrder(alice.id, { deliveredAt: daysAgo(40), orderedAt: daysAgo(44) });
     const seeded = await prisma.refundRequest.create({
-      data: { orderId: order.id, customerId: alice.id, reason: "CHANGED_MIND", amountCents: 80_00, requestedAt: daysAgo(15) },
+      data: {
+        orderId: order.id,
+        customerId: alice.id,
+        reason: "CHANGED_MIND",
+        amountCents: 80_00,
+        requestedAt: daysAgo(15),
+      },
     });
     expect((await rerun(seeded.id)).body.status).toBe("APPROVED");
   });
@@ -348,13 +457,22 @@ describe("POST /refund-requests/:id/rerun", () => {
   it("recovers a request escalated while Claude was unavailable", async () => {
     const order = await createOrder(alice.id);
     claudeDown = true;
-    const first = await submit({ customerId: alice.id, orderId: order.id, message: "Stopped charging", reason: "DEFECTIVE" });
+    const first = await submit({
+      customerId: alice.id,
+      orderId: order.id,
+      message: "Stopped charging",
+      reason: "DEFECTIVE",
+    });
     expect(first.body).toMatchObject({ status: "ESCALATED", decisionSource: "ai_unavailable" });
 
     claudeDown = false;
     const res = await rerun(first.body.id);
     expect(res.body).toMatchObject({ status: "APPROVED", decisionSource: "ai_assisted" });
-    expect(res.body.reasoningLog[0]).toMatchObject({ stage: "rerun", previousStatus: "ESCALATED", previousSource: "ai_unavailable" });
+    expect(res.body.reasoningLog[0]).toMatchObject({
+      stage: "rerun",
+      previousStatus: "ESCALATED",
+      previousSource: "ai_unavailable",
+    });
   });
 
   it("re-runs still apply the injection guard", async () => {
@@ -386,19 +504,92 @@ describe("POST /refund-requests/:id/rerun", () => {
   });
 });
 
-describe("GET /customers", () => {
-  it("lists customers by name for the support page's login dropdown", async () => {
-    const res = await request(app).get("/customers");
+describe("customer sign-in and sessions", () => {
+  const signIn = (body: object) => request(app).post("/auth/sign-in").send(body);
+
+  it("signs in with email + an order number, case- and space-insensitive", async () => {
+    const order = await createOrder(alice.id);
+    const res = await signIn({ email: "  ALICE@example.com ", orderNumber: ` ${order.orderNumber.toLowerCase()} ` });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([
-      { id: alice.id, name: "Alice", email: "alice@example.com" },
-      { id: bob.id, name: "Bob", email: "bob@example.com" },
-    ]);
+    expect(res.body.customer).toEqual({ id: alice.id, name: "Alice", email: "alice@example.com" });
+    expect(typeof res.body.token).toBe("string");
+
+    const me = await request(app).get("/me").set("authorization", `Bearer ${res.body.token}`);
+    expect(me.status).toBe(200);
+    expect(me.body).toMatchObject({ id: alice.id, name: "Alice" });
+  });
+
+  it("gives the same 401 for an unknown email and for someone else's order number", async () => {
+    const bobsOrder = await createOrder(bob.id);
+    const wrongOwner = await signIn({ email: "alice@example.com", orderNumber: bobsOrder.orderNumber });
+    const unknown = await signIn({ email: "nobody@example.com", orderNumber: bobsOrder.orderNumber });
+    expect(wrongOwner.status).toBe(401);
+    expect(unknown.status).toBe(401);
+    expect(wrongOwner.body).toEqual(unknown.body);
+    expect(wrongOwner.body).not.toHaveProperty("token");
+  });
+
+  it("validates the sign-in form", async () => {
+    const res = await signIn({ email: "not-an-email", orderNumber: "" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.details.map((d: { path: string }) => d.path).sort()).toEqual(["email", "orderNumber"]);
+  });
+
+  it("rate-limits repeated sign-in attempts", async () => {
+    const limited = createApp({
+      prisma,
+      assessor: {
+        assessRefundRequest: async () => {
+          throw new Error();
+        },
+      },
+      authSecret: SECRET,
+    });
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      statuses.push(
+        (await request(limited).post("/auth/sign-in").send({ email: "x@example.com", orderNumber: "ORD-0" })).status,
+      );
+    }
+    expect(statuses.slice(0, 10).every((s) => s === 401)).toBe(true);
+    expect(statuses[10]).toBe(429);
+  });
+
+  it("requires a valid session for customer endpoints", async () => {
+    const order = await createOrder(alice.id);
+    expect((await request(app).get("/me")).status).toBe(401);
+    expect((await request(app).get("/me").set("authorization", "Bearer forged.token")).status).toBe(401);
+    expect(
+      (
+        await request(app)
+          .get("/me")
+          .set("authorization", `Bearer ${signToken(alice.id, "a-different-secret-entirely")}`)
+      ).status,
+    ).toBe(401);
+    const expired = signToken(alice.id, SECRET, Date.now() - 3 * 60 * 60 * 1000);
+    expect((await request(app).get("/me").set("authorization", `Bearer ${expired}`)).status).toBe(401);
+
+    const noSession = await request(app).post("/refund-requests").send({ orderId: order.id, message: "x" });
+    expect(noSession.status).toBe(401);
+    expect(noSession.body.error.code).toBe("unauthorized");
+  });
+
+  it("ignores a customerId smuggled into the body: the session decides whose request it is", async () => {
+    const bobsOrder = await createOrder(bob.id);
+    const res = await request(app)
+      .post("/refund-requests")
+      .set("authorization", bearer(alice.id))
+      .send({ customerId: bob.id, orderId: bobsOrder.id, message: "x" });
+    expect(res.status).toBe(400); // unknown key rejected outright
+  });
+
+  it("no longer exposes a public customer list", async () => {
+    expect((await request(app).get("/customers")).status).toBe(404);
   });
 });
 
-describe("GET /customers/:id/orders", () => {
-  it("returns the customer's orders newest first with their refund requests", async () => {
+describe("GET /me", () => {
+  it("returns only the signed-in customer's orders, newest first, with their refund requests", async () => {
     const older = await createOrder(alice.id, { orderedAt: daysAgo(40), productName: "Old" });
     const newer = await createOrder(alice.id, { orderedAt: daysAgo(2), productName: "New" });
     await createOrder(bob.id);
@@ -406,21 +597,37 @@ describe("GET /customers/:id/orders", () => {
       data: { orderId: older.id, customerId: alice.id, reason: "OTHER", amountCents: 1, status: "DENIED" },
     });
 
-    const res = await request(app).get(`/customers/${alice.id}/orders`);
+    const res = await request(app).get("/me").set("authorization", bearer(alice.id));
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: alice.id, name: "Alice" });
     expect(res.body.orders.map((o: { id: number }) => o.id)).toEqual([newer.id, older.id]);
     expect(res.body.orders[1].refundRequests).toEqual([expect.objectContaining({ status: "DENIED" })]);
   });
 
-  it("returns 404 for an unknown customer", async () => {
-    expect((await request(app).get("/customers/99999/orders")).status).toBe(404);
+  it("returns 404 if the session's customer no longer exists", async () => {
+    expect((await request(app).get("/me").set("authorization", bearer(99999))).status).toBe(404);
   });
 });
 
 describe("misc", () => {
   it("reports health", async () => {
     expect((await request(app).get("/health")).body).toEqual({ status: "ok", database: "ok" });
+  });
+
+  it("reports the active AI provider in health, never the key", async () => {
+    const ai = { provider: "openai", model: "gpt-test", configured: true };
+    const res = await request(
+      createApp({
+        prisma,
+        assessor: {
+          assessRefundRequest: async () => {
+            throw new Error();
+          },
+        },
+        ai,
+      }),
+    ).get("/health");
+    expect(res.body).toEqual({ status: "ok", database: "ok", ai });
   });
 
   it("returns a JSON 404 for unknown routes", async () => {

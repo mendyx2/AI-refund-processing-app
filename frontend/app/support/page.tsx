@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 
-import SupportChat from "./SupportChat";
+import HelpCenter from "./HelpCenter";
 
 export const metadata: Metadata = {
-  title: "Refund support",
-  description: "Request a refund for one of your orders",
+  title: "Help Center · Refunds",
+  description: "Get help with a refund for one of your orders",
 };
 
 export default function SupportPage() {
-  return <SupportChat />;
+  return <HelpCenter />;
 }

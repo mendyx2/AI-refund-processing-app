@@ -56,6 +56,8 @@ export type ReasoningStep =
   | {
       stage: "ai";
       consulted: true;
+      /** anthropic | openai | gemini | openai-compatible | none. Absent on older traces. */
+      provider?: string;
       model: string;
       /** assessment: rule-approved request; consistency_check: reason-dependent denial. Absent on older traces. */
       mode?: "assessment" | "consistency_check";
@@ -94,8 +96,14 @@ export interface RefundDetail extends Omit<RefundListItem, "order"> {
   order: Omit<Order, "refundRequests">;
 }
 
+export interface SignInResult {
+  token: string;
+  expiresAt: string;
+  customer: Customer;
+}
+
+/** The customer is taken from the session token; it is never sent in the body. */
 export interface NewRefundRequest {
-  customerId: number;
   orderId: number;
   message: string;
   reason: RefundReason;
@@ -113,7 +121,9 @@ export class ApiError extends Error {
 }
 
 /** Messages safe to show customers, keyed by the backend's error codes. */
-function friendlyMessage(status: number, code: string): string {
+function friendlyMessage(status: number, code: string, serverMessage?: string): string {
+  // These server messages are written for customers.
+  if ((code === "unauthorized" || code === "too_many_attempts") && serverMessage) return serverMessage;
   if (code === "conflict") return "You already have a refund request in progress for this order.";
   if (code === "not_found") return "We couldn't find that order on your account.";
   if (code === "validation_error" || code === "invalid_body") {
@@ -144,32 +154,46 @@ async function request<T>(path: string, init: RequestInit & { timeoutMs?: number
   }
 
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: { code?: string } } | null;
+    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
     const code = body?.error?.code ?? "unknown";
-    throw new ApiError(res.status, code, friendlyMessage(res.status, code));
+    throw new ApiError(res.status, code, friendlyMessage(res.status, code, body?.error?.message));
   }
   return (await res.json()) as T;
 }
 
+export interface Health {
+  status: string;
+  database: string;
+  ai?: { provider: string; model: string | null; configured: boolean };
+}
+
+const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+
 export const api = {
-  listCustomers: (signal?: AbortSignal) => request<Customer[]>("/customers", { signal }),
+  health: (signal?: AbortSignal) => request<Health>("/health", { signal }),
 
-  customerOrders: (customerId: number, signal?: AbortSignal) =>
-    request<CustomerOrders>(`/customers/${customerId}/orders`, { signal }),
+  // --- Customer (help center) ------------------------------------------------
+  signIn: (email: string, orderNumber: string) =>
+    request<SignInResult>("/auth/sign-in", { method: "POST", body: JSON.stringify({ email, orderNumber }) }),
 
+  /** The signed-in customer's profile and orders. */
+  me: (token: string, signal?: AbortSignal) => request<CustomerOrders>("/me", { signal, headers: auth(token) }),
+
+  /** May consult the AI model, so it gets a longer timeout than the lookups. */
+  submitRefundRequest: (token: string, body: NewRefundRequest) =>
+    request<RefundResult>("/refund-requests", {
+      method: "POST",
+      headers: auth(token),
+      body: JSON.stringify(body),
+      timeoutMs: 120_000,
+    }),
+
+  // --- Staff (admin dashboard) -----------------------------------------------
   listRefundRequests: (signal?: AbortSignal) => request<RefundListItem[]>("/refund-requests", { signal }),
 
   getRefundRequest: (id: number, signal?: AbortSignal) => request<RefundDetail>(`/refund-requests/${id}`, { signal }),
 
-  /** Staff action; may consult Claude. */
+  /** Staff action; may consult the AI model. */
   rerunRefundRequest: (id: number) =>
     request<RefundDetail>(`/refund-requests/${id}/rerun`, { method: "POST", timeoutMs: 120_000 }),
-
-  /** May consult Claude, so it gets a longer timeout than the lookups. */
-  submitRefundRequest: (body: NewRefundRequest) =>
-    request<RefundResult>("/refund-requests", {
-      method: "POST",
-      body: JSON.stringify(body),
-      timeoutMs: 120_000,
-    }),
 };
