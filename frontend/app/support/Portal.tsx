@@ -9,6 +9,7 @@ import {
   Inbox,
   RefreshCw,
   SendHorizontal,
+  Sparkles,
   Tag,
   Truck,
 } from "lucide-react";
@@ -21,6 +22,7 @@ import {
   type CustomerOrders,
   type NewRefundRequest,
   type Order,
+  type ReasonSuggestion,
   type RefundReason,
   type RefundResult,
 } from "@/lib/api";
@@ -111,6 +113,10 @@ export default function Portal({
   const [reason, setReason] = useState<RefundReason | null>(null);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Free text typed before a reason was picked, waiting for the customer to confirm a reason (feature A).
+  const [pendingText, setPendingText] = useState<string | null>(null);
+  const [suggestion, setSuggestion] = useState<ReasonSuggestion | null>(null);
+  const [understanding, setUnderstanding] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     say(`Hi ${firstName}! I'm here to help with refunds. Choose the order you need help with.`),
   ]);
@@ -150,20 +156,29 @@ export default function Portal({
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, submitting]);
+  }, [messages, submitting, understanding, suggestion]);
 
   const selected = account?.orders.find((o) => o.id === selectedId) ?? null;
-  const canSend = Boolean(selected) && !submitting && (reason !== null || draft.trim() !== "");
+  const busy = submitting || understanding;
+  const awaitingReason = pendingText !== null; // text given; reason still to be confirmed
+  const canSend = Boolean(selected) && !busy && !awaitingReason && (reason !== null || draft.trim() !== "");
+
+  function resetFlow() {
+    setReason(null);
+    setDraft("");
+    setPendingText(null);
+    setSuggestion(null);
+  }
 
   // --- actions --------------------------------------------------------------
 
   function selectOrder(order: Order) {
-    if (submitting) return;
+    if (busy) return;
     const open = openRequest(order);
     if (open) {
       // Only one open request per order: explain instead of silently ignoring the click.
       setSelectedId(null);
-      setReason(null);
+      resetFlow();
       setMessages((m) => [
         ...m,
         me(`What's happening with my ${order.productName}?`),
@@ -176,8 +191,7 @@ export default function Portal({
       return;
     }
     setSelectedId(order.id);
-    setReason(null);
-    setDraft("");
+    resetFlow();
     setMessages((m) => [
       ...m,
       me(`I need help with my ${order.productName}.`),
@@ -192,7 +206,16 @@ export default function Portal({
   }
 
   function chooseReason(r: RefundReason) {
-    if (!selected || submitting) return;
+    if (!selected || busy) return;
+    if (pendingText !== null) {
+      // The customer already described the problem; picking the reason sends it.
+      const text = pendingText;
+      setMessages((m) => [...m, me(reasonLabel(r))]);
+      setPendingText(null);
+      setSuggestion(null);
+      void submit({ orderId: selected.id, reason: r, message: text }, selected);
+      return;
+    }
     setReason(r);
     setMessages((m) => [
       ...m,
@@ -204,8 +227,7 @@ export default function Portal({
 
   function cancelSelection() {
     setSelectedId(null);
-    setReason(null);
-    setDraft("");
+    resetFlow();
     setMessages((m) => [...m, say("No problem. Choose another order whenever you're ready.")]);
   }
 
@@ -219,7 +241,7 @@ export default function Portal({
         say("Is there anything else I can help with? You can choose another order."),
       ]);
       setSelectedId(null);
-      setReason(null);
+      resetFlow();
       void load();
     } catch (err) {
       setMessages((m) => [
@@ -235,10 +257,53 @@ export default function Portal({
     e?.preventDefault();
     if (!canSend || !selected) return;
     const text = draft.trim();
-    const chosen = reason ?? "OTHER";
     if (text) setMessages((m) => [...m, me(text)]);
     setDraft("");
-    void submit({ orderId: selected.id, reason: chosen, message: text || reasonLabel(chosen) }, selected);
+    if (reason !== null) {
+      void submit({ orderId: selected.id, reason, message: text || reasonLabel(reason) }, selected);
+    } else {
+      void understand(selected, text);
+    }
+  }
+
+  /**
+   * Feature A: the customer described the problem without picking a reason.
+   * Ask the AI which reason fits, then let the customer confirm it. The AI only
+   * suggests: nothing is sent until the customer says yes or picks a reason.
+   */
+  async function understand(order: Order, text: string) {
+    setPendingText(text);
+    setUnderstanding(true);
+    let found: ReasonSuggestion | null = null;
+    try {
+      found = (await api.suggestReason(token, { orderId: order.id, message: text })).suggestion;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) return onSessionExpired();
+      // Any other problem: fall back to asking the customer to pick.
+    } finally {
+      setUnderstanding(false);
+    }
+    setSuggestion(found);
+    setMessages((m) => [
+      ...m,
+      found
+        ? say(`Thanks for explaining. ${found.summary} Shall I file this as “${found.label}”?`)
+        : say("Thanks for explaining. Which of these best describes the problem?"),
+    ]);
+  }
+
+  function confirmSuggestion(yes: boolean) {
+    if (!selected || !suggestion || pendingText === null) return;
+    if (yes) {
+      setMessages((m) => [...m, me("Yes, that's right")]);
+      const payload = { orderId: selected.id, reason: suggestion.reason, message: pendingText };
+      setPendingText(null);
+      setSuggestion(null);
+      void submit(payload, selected);
+    } else {
+      setMessages((m) => [...m, me("No, let me choose"), say("No problem. Which of these fits best?")]);
+      setSuggestion(null); // shows the reason list; pendingText is kept
+    }
   }
 
   function retry(msg: Extract<ChatMessage, { kind: "error" }>) {
@@ -299,7 +364,7 @@ export default function Portal({
                   <OrderCard
                     order={order}
                     selected={order.id === selectedId}
-                    disabled={submitting}
+                    disabled={busy}
                     onSelect={() => selectOrder(order)}
                   />
                 </li>
@@ -335,7 +400,8 @@ export default function Portal({
             {messages.map((msg) => (
               <Bubble key={msg.id} message={msg} onRetry={retry} retryDisabled={submitting} />
             ))}
-            {submitting && <Typing />}
+            {understanding && <Typing label="Reading your message…" />}
+            {submitting && <Typing label="Checking your order against our refund policy…" />}
           </div>
 
           {/* Composer */}
@@ -351,7 +417,7 @@ export default function Portal({
                 </span>
                 <button
                   onClick={cancelSelection}
-                  disabled={submitting}
+                  disabled={busy}
                   className="inline-flex shrink-0 items-center gap-1 font-medium text-indigo-700 hover:text-indigo-900 disabled:opacity-50"
                 >
                   <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> Change
@@ -361,7 +427,27 @@ export default function Portal({
               <p className="mb-3 text-xs text-slate-500">Choose an order from your list to get started.</p>
             )}
 
-            {selected && reason === null && !submitting && (
+            {selected && suggestion && !busy && (
+              <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Confirm the reason">
+                <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                  <Sparkles className="h-3.5 w-3.5 text-violet-500" aria-hidden /> Suggested: {suggestion.label}
+                </span>
+                <button
+                  onClick={() => confirmSuggestion(true)}
+                  className="rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:brightness-110"
+                >
+                  Yes, that&apos;s right
+                </button>
+                <button
+                  onClick={() => confirmSuggestion(false)}
+                  className="rounded-full bg-white px-3.5 py-1.5 text-xs font-medium text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+                >
+                  No, let me choose
+                </button>
+              </div>
+            )}
+
+            {selected && reason === null && !suggestion && !busy && (
               <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="What's the problem?">
                 {REASONS.map((r) => (
                   <button
@@ -390,13 +476,15 @@ export default function Portal({
                   }}
                   maxLength={MAX_MESSAGE}
                   rows={2}
-                  disabled={!selected || submitting}
+                  disabled={!selected || busy || awaitingReason}
                   placeholder={
                     !selected
                       ? "Choose an order first"
-                      : reason
-                        ? "Add details (optional), then press Send…"
-                        : "Pick an option above, or describe the problem…"
+                      : awaitingReason
+                        ? "Choose an option above to send your request"
+                        : reason
+                          ? "Add details (optional), then press Send…"
+                          : "Pick an option above, or just describe the problem…"
                   }
                   className="block w-full resize-none rounded-xl border-0 bg-slate-50 px-3.5 py-2.5 text-sm text-slate-900 ring-1 ring-inset ring-slate-200 placeholder:text-slate-400 focus:bg-white focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
@@ -545,7 +633,17 @@ function Bubble({
             <p className="mt-3 text-sm leading-relaxed text-slate-700">
               {result.customerMessage ?? "We've recorded your request."}
             </p>
-            <p className="mt-3 text-xs text-slate-400">Reference #{result.id}</p>
+            <p className="mt-3 flex items-center justify-between gap-2 text-xs text-slate-400">
+              <span>Reference #{result.id}</span>
+              {result.reasoningLog?.some((s) => s.stage === "reply" && s.by === "ai") && (
+                <span
+                  className="inline-flex items-center gap-1"
+                  title="Worded by our AI assistant; the decision follows our refund policy"
+                >
+                  <Sparkles className="h-3 w-3" aria-hidden /> AI-assisted reply
+                </span>
+              )}
+            </p>
           </div>
         </div>
       </AssistantRow>
@@ -595,7 +693,7 @@ function AssistantRow({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Typing() {
+function Typing({ label }: { label: string }) {
   return (
     <AssistantRow>
       <div className="flex items-center gap-2.5 rounded-2xl rounded-bl-md bg-white px-4 py-3 text-sm text-slate-600 shadow-sm ring-1 ring-slate-200">
@@ -604,7 +702,7 @@ function Typing() {
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-400 [animation-delay:-0.1s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-400" />
         </span>
-        Checking your order against our refund policy…
+        {label}
       </div>
     </AssistantRow>
   );

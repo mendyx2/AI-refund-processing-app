@@ -1,3 +1,4 @@
+import { CustomerAssistant } from "./ai/assist";
 import { createProvider, describeAiConfig, resolveAiConfig } from "./ai/config";
 import { resolveAuthSecret } from "./auth";
 import { RefundAiLayer } from "./aiLayer";
@@ -24,9 +25,12 @@ if (auth.ephemeral) {
 }
 
 const prisma = createPrisma();
+const provider = createProvider(aiConfig);
 const app = createApp({
   prisma,
-  assessor: new RefundAiLayer({ provider: createProvider(aiConfig) }),
+  assessor: new RefundAiLayer({ provider }),
+  // Suggests reasons for free text and personalizes replies; falls back to templates.
+  assistant: new CustomerAssistant(provider),
   corsOrigins,
   ai,
   authSecret: auth.secret,
