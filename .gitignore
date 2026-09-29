@@ -19,3 +19,6 @@ backend/db/
 
 # Prisma generated client
 backend/src/generated/
+
+# Personal notes (not part of the submission)
+docs/NOTES.md

@@ -193,7 +193,6 @@ backend/
   src/ai/             Provider adapters (providers.ts) and env-based selection (config.ts)
   src/services/       Refund workflow, customer-facing messages
   src/routes/         Express routes
-docs/NOTES.md         Running log of design decisions and open questions
 ```
 
 ### API
@@ -387,8 +386,7 @@ can probe what triggers the guard.
 
 ## Assumptions and trade-offs
 
-These were made to fit the time budget. `docs/NOTES.md` has the full running
-log.
+These were made to fit the time budget.
 
 **Product and policy**
 - **The policy numbers are assumptions.** 30- and 60-day windows, a $500
